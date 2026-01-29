@@ -7,7 +7,7 @@ from dotenv import load_dotenv
 
 from langchain_core.messages import HumanMessage, AIMessage, BaseMessage
 from langchain_huggingface import HuggingFaceEndpoint
-
+from langgraph.checkpoint.memory import InMemorySaver
 from langgraph.graph import StateGraph, START, END
 from langgraph.graph.message import add_messages
 
@@ -44,20 +44,21 @@ class ChatRequest(BaseModel):
 class ChatResponse(BaseModel):
     response: str
 
-chat_state: ChatState = {"messages": []}
+memory = InMemorySaver()
+app_graph = graph.compile(checkpointer=memory)
 
 @app.post("/chat", response_model=ChatResponse)
 def chat(req: ChatRequest):
 
-    global chat_state
+    config = {"configurable": {"thread_id": "1"}}
 
-    chat_state["messages"].append(HumanMessage(content=req.message))
+    input_data = {"messages": [HumanMessage(content=req.message)]}
 
-    chat_state = app_graph.invoke(chat_state)
+    output = app_graph.invoke(input_data, config=config)
 
-    ai_msg = chat_state["messages"][-1]
+    ai_message = output["messages"][-1]
 
-    return {"response": ai_msg.content}
+    return {"response": ai_message.content}
 
 @app.get("/")
 def root():
