@@ -29,24 +29,17 @@ llm = HuggingFaceEndpoint(
 class ChatState(TypedDict):
     messages: Annotated[List[BaseMessage], add_messages]
 
-def thinking_node(state: ChatState) -> ChatState:
-    print("AI is thinking...")
-    system_instruction = SystemMessage(content="You are a helpful assistant.Be concise and clear in your responses.")
-    return {"messages": [system_instruction]}
-
-def generation_node(state: ChatState) -> ChatState:
+def chat_node(state: ChatState) -> ChatState:
     print("Generating AI response...")
     response = llm.invoke(state["messages"])
     return {"messages": [AIMessage(content=response)]}
 
 graph = StateGraph(ChatState)
 
-graph.add_node("thinker", thinking_node)
-graph.add_node("generator", generation_node)
+graph.add_node("chat", chat_node)
 
-graph.add_edge(START, "thinker")
-graph.add_edge("thinker", "generator")
-graph.add_edge("generator", END)
+graph.add_edge(START, "chat")
+graph.add_edge("chat", END)
 
 class ChatRequest(BaseModel):
     message: str
@@ -63,8 +56,15 @@ def chat(req: ChatRequest):
 
     config = {"configurable": {"thread_id": req.thread_id}}
 
+    system_prompt = SystemMessage(content="You are a helpful AI assistant. Be concise, accurate, and clear.")
+
     output = app_graph.invoke(
-        {"messages": [HumanMessage(content=req.message)]},
+        {
+            "messages": [
+                system_prompt,
+                HumanMessage(content=req.message)
+            ]
+        },
         config=config
     )
 
