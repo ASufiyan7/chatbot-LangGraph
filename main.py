@@ -1,5 +1,5 @@
 import os
-from typing import List, TypedDict, Annotated
+from typing import List, TypedDict, Annotated, Literal
 
 from fastapi import FastAPI
 from pydantic import BaseModel
@@ -34,12 +34,34 @@ def chat_node(state: ChatState) -> ChatState:
     response = llm.invoke(state["messages"])
     return {"messages": [AIMessage(content=response)]}
 
+def goodbye_node(state: ChatState) -> ChatState:
+    print("Ending conversation.")
+    return {"messages": [AIMessage(content="Goodbye!")]}
+
+def router(state: ChatState) -> Literal["end_chat", "continue_chat"]:
+    last_message = state['messages'][-1].content.lower()
+
+    if any(words in last_message for words in ["bye", "exit", "quit", "goodbye"]):
+        return "end_chat"
+    
+    return "continue_chat"
+
 graph = StateGraph(ChatState)
 
 graph.add_node("chat", chat_node)
+graph.add_node("goodbye", goodbye_node)
 
-graph.add_edge(START, "chat")
+graph.add_conditional_edges(
+    START,
+    router,
+    {
+        "end_chat": "goodbye",
+        "continue_chat": "chat"
+    }
+)
+
 graph.add_edge("chat", END)
+graph.add_edge("goodbye", END)
 
 class ChatRequest(BaseModel):
     message: str
