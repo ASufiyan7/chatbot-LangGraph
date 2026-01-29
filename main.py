@@ -13,14 +13,17 @@ from langgraph.graph.message import add_messages
 
 load_dotenv()
 HF_TOKEN = os.getenv("HUGGINGFACE_API_KEY")
+if not HF_TOKEN:
+    raise ValueError("HUGGINGFACE_API_KEY not found in environment variables.")
 
-app = FastAPI(title="LangGraph HuggingFace Chatbot")
+app = FastAPI(title="LangGraph HuggingFace Chatbot API")
 
 llm = HuggingFaceEndpoint(
     repo_id="mistralai/Mistral-7B-Instruct-v0.2",
     temperature=0.7,
     huggingfacehub_api_token=HF_TOKEN,
-    max_new_tokens=512
+    max_new_tokens=512,
+    streaming=True
 )
 
 class ChatState(TypedDict):
