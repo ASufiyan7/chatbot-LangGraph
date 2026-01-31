@@ -8,7 +8,8 @@ from dotenv import load_dotenv
 
 from langchain_core.messages import HumanMessage, AIMessage, BaseMessage
 from langchain_huggingface import HuggingFaceEndpoint
-from langchain_core.tools import Tool
+from langchain_huggingface import ChatHuggingFace
+from langchain_core.tools import tool
 from langgraph.checkpoint.memory import InMemorySaver
 from langgraph.graph import StateGraph, START, END
 from langgraph.graph.message import add_messages
@@ -22,8 +23,9 @@ if not HF_TOKEN:
 app = FastAPI(title="LangGraph Tool Calling Chatbot")
 
 # LLM
-llm = HuggingFaceEndpoint(
+llm = ChatHuggingFace(
     repo_id="mistralai/Mistral-7B-Instruct-v0.2",
+    task="conversational",
     temperature=0.1,
     max_new_tokens=512,
     huggingfacehub_api_token=HF_TOKEN,
@@ -34,7 +36,7 @@ class ChatState(TypedDict):
     messages: Annotated[List[BaseMessage], add_messages]
 
 # TOOL
-@Tool
+@tool
 def multiply(a: int, b: int) -> int:
     """Multiply two integers."""
     return a * b
@@ -85,19 +87,6 @@ def tool_router(state: ChatState) -> Literal["use_tool", "no_tool"]:
 
     return "no_tool"
 
-# EXIT ROUTER
-def exit_router(state: ChatState) -> Literal["end_chat", "continue"]:
-    for msg in reversed(state["messages"]):
-        if isinstance(msg, HumanMessage):
-            text = msg.content.lower()
-            break
-    else:
-        return "continue"
-
-    if any(word in text for word in ["bye", "exit", "quit", "goodbye"]):
-        return "end_chat"
-
-    return "continue"
 
 # GRAPH
 graph = StateGraph(ChatState)
@@ -113,16 +102,7 @@ graph.add_conditional_edges(
     tool_router,
     {
         "use_tool": "tool",
-        "no_tool": END,
-    },
-)
-
-graph.add_conditional_edges(
-    END,
-    exit_router,
-    {
-        "end_chat": "goodbye",
-        "continue": END,
+        "no_tool": "goodbye",
     },
 )
 
