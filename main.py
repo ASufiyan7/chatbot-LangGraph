@@ -23,7 +23,6 @@ llm = HuggingFaceEndpoint(
     temperature=0.7,
     huggingfacehub_api_token=HF_TOKEN,
     max_new_tokens=512,
-    streaming=True
 )
 
 class ChatState(TypedDict):
@@ -31,15 +30,21 @@ class ChatState(TypedDict):
 
 def chat_node(state: ChatState) -> ChatState:
     print("Generating AI response...")
-    response = llm.invoke(state["messages"])
-    return {"messages": [AIMessage(content=response)]}
+    ai_response = llm.invoke(state["messages"])
+    return {"messages": [AIMessage(content=ai_response)]}
 
 def goodbye_node(state: ChatState) -> ChatState:
     print("Ending conversation.")
     return {"messages": [AIMessage(content="Goodbye!")]}
 
 def router(state: ChatState) -> Literal["end_chat", "continue_chat"]:
-    last_message = state['messages'][-1].content.lower()
+    for msg in reversed(state["messages"]):
+        if isinstance(msg, HumanMessage):
+            last_message = msg.content.lower()
+            break
+
+    else:
+        return "continue_chat"
 
     if any(words in last_message for words in ["bye", "exit", "quit", "goodbye"]):
         return "end_chat"
@@ -51,16 +56,17 @@ graph = StateGraph(ChatState)
 graph.add_node("chat", chat_node)
 graph.add_node("goodbye", goodbye_node)
 
+graph.add_edge(START, "chat")
+
 graph.add_conditional_edges(
-    START,
+    "chat",
     router,
     {
         "end_chat": "goodbye",
-        "continue_chat": "chat"
+        "continue_chat": END
     }
 )
 
-graph.add_edge("chat", END)
 graph.add_edge("goodbye", END)
 
 class ChatRequest(BaseModel):
