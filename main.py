@@ -1,78 +1,132 @@
 import os
+import re
 from typing import List, TypedDict, Annotated, Literal
 
 from fastapi import FastAPI
 from pydantic import BaseModel
 from dotenv import load_dotenv
 
-from langchain_core.messages import HumanMessage, AIMessage, BaseMessage, SystemMessage
+from langchain_core.messages import HumanMessage, AIMessage, BaseMessage
 from langchain_huggingface import HuggingFaceEndpoint
+from langchain_core.tools import Tool
 from langgraph.checkpoint.memory import InMemorySaver
 from langgraph.graph import StateGraph, START, END
 from langgraph.graph.message import add_messages
 
-# ENV + APP SETUP
+# ENV SETUP
 load_dotenv()
 HF_TOKEN = os.getenv("HUGGINGFACE_API_KEY")
 if not HF_TOKEN:
-    raise ValueError("HUGGINGFACE_API_KEY not found in environment variables.")
+    raise ValueError("HUGGINGFACE_API_KEY not found")
 
-app = FastAPI(title="LangGraph HuggingFace Chatbot API")
+app = FastAPI(title="LangGraph Tool Calling Chatbot")
 
-# LLM SETUP
+# LLM
 llm = HuggingFaceEndpoint(
     repo_id="mistralai/Mistral-7B-Instruct-v0.2",
-    temperature=0.7,
-    huggingfacehub_api_token=HF_TOKEN,
+    temperature=0.1,
     max_new_tokens=512,
+    huggingfacehub_api_token=HF_TOKEN,
 )
 
 # STATE
 class ChatState(TypedDict):
     messages: Annotated[List[BaseMessage], add_messages]
 
-# NODES
+# TOOL
+@Tool
+def multiply(a: int, b: int) -> int:
+    """Multiply two integers."""
+    return a * b
+
+# TOOL NODE
+def tool_node(state: ChatState) -> ChatState:
+    for msg in reversed(state["messages"]):
+        if isinstance(msg, HumanMessage):
+            last_message = msg.content
+            break
+    else:
+        return {"messages": [AIMessage(content="No input found.")]}
+
+    numbers = list(map(int, re.findall(r"\d+", last_message)))
+
+    if len(numbers) >= 2:
+        result = multiply(numbers[0], numbers[1])
+        return {
+            "messages": [
+                AIMessage(
+                    content=f"The result of multiplying {numbers[0]} and {numbers[1]} is {result}."
+                )
+            ]
+        }
+
+    return {"messages": [AIMessage(content="Please provide two numbers.")]}
+
+# CHAT NODE
 def chat_node(state: ChatState) -> ChatState:
-    print("Generating AI response...")
     ai_response = llm.invoke(state["messages"])
     return {"messages": [AIMessage(content=ai_response)]}
 
+# GOODBYE NODE
 def goodbye_node(state: ChatState) -> ChatState:
-    print("Ending conversation.")
     return {"messages": [AIMessage(content="Goodbye!")]}
 
-# ROUTER
-def router(state: ChatState) -> Literal["end_chat", "continue_chat"]:
+# TOOL ROUTER
+def tool_router(state: ChatState) -> Literal["use_tool", "no_tool"]:
     for msg in reversed(state["messages"]):
         if isinstance(msg, HumanMessage):
-            last_message = msg.content.lower()
+            text = msg.content.lower()
             break
-
     else:
-        return "continue_chat"
+        return "no_tool"
 
-    if any(words in last_message for words in ["bye", "exit", "quit", "goodbye"]):
+    if "multiply" in text or "product" in text:
+        return "use_tool"
+
+    return "no_tool"
+
+# EXIT ROUTER
+def exit_router(state: ChatState) -> Literal["end_chat", "continue"]:
+    for msg in reversed(state["messages"]):
+        if isinstance(msg, HumanMessage):
+            text = msg.content.lower()
+            break
+    else:
+        return "continue"
+
+    if any(word in text for word in ["bye", "exit", "quit", "goodbye"]):
         return "end_chat"
-    
-    return "continue_chat"
 
-# GRAPH 
+    return "continue"
+
+# GRAPH
 graph = StateGraph(ChatState)
 
 graph.add_node("chat", chat_node)
+graph.add_node("tool", tool_node)
 graph.add_node("goodbye", goodbye_node)
 
 graph.add_edge(START, "chat")
 
 graph.add_conditional_edges(
     "chat",
-    router,
+    tool_router,
     {
-        "end_chat": "goodbye",
-        "continue_chat": END
-    }
+        "use_tool": "tool",
+        "no_tool": END,
+    },
 )
 
+graph.add_conditional_edges(
+    END,
+    exit_router,
+    {
+        "end_chat": "goodbye",
+        "continue": END,
+    },
+)
+
+graph.add_edge("tool", END)
 graph.add_edge("goodbye", END)
 
 # MEMORY
@@ -87,23 +141,18 @@ class ChatRequest(BaseModel):
 class ChatResponse(BaseModel):
     response: str
 
-# API ENDPOINTS
+# API
 @app.post("/chat", response_model=ChatResponse)
 def chat(req: ChatRequest):
-
     config = {"configurable": {"thread_id": req.thread_id}}
 
-    input_messages = [HumanMessage(content=req.message)]
-
     output = app_graph.invoke(
-        {
-            "messages": input_messages
-        },
-        config=config
+        {"messages": [HumanMessage(content=req.message)]},
+        config=config,
     )
 
-    return {'response': output["messages"][-1].content}
+    return {"response": output["messages"][-1].content}
 
 @app.get("/")
 def root():
-    return {"status": "LangGraph + HuggingFace Chatbot API Running"}
+    return {"status": "LangGraph Tool Chatbot Running"}
