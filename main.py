@@ -11,6 +11,7 @@ from langgraph.checkpoint.memory import InMemorySaver
 from langgraph.graph import StateGraph, START, END
 from langgraph.graph.message import add_messages
 
+# ENV + APP SETUP
 load_dotenv()
 HF_TOKEN = os.getenv("HUGGINGFACE_API_KEY")
 if not HF_TOKEN:
@@ -18,6 +19,7 @@ if not HF_TOKEN:
 
 app = FastAPI(title="LangGraph HuggingFace Chatbot API")
 
+# LLM SETUP
 llm = HuggingFaceEndpoint(
     repo_id="mistralai/Mistral-7B-Instruct-v0.2",
     temperature=0.7,
@@ -25,9 +27,11 @@ llm = HuggingFaceEndpoint(
     max_new_tokens=512,
 )
 
+# STATE
 class ChatState(TypedDict):
     messages: Annotated[List[BaseMessage], add_messages]
 
+# NODES
 def chat_node(state: ChatState) -> ChatState:
     print("Generating AI response...")
     ai_response = llm.invoke(state["messages"])
@@ -37,6 +41,7 @@ def goodbye_node(state: ChatState) -> ChatState:
     print("Ending conversation.")
     return {"messages": [AIMessage(content="Goodbye!")]}
 
+# ROUTER
 def router(state: ChatState) -> Literal["end_chat", "continue_chat"]:
     for msg in reversed(state["messages"]):
         if isinstance(msg, HumanMessage):
@@ -51,6 +56,7 @@ def router(state: ChatState) -> Literal["end_chat", "continue_chat"]:
     
     return "continue_chat"
 
+# GRAPH 
 graph = StateGraph(ChatState)
 
 graph.add_node("chat", chat_node)
@@ -69,6 +75,11 @@ graph.add_conditional_edges(
 
 graph.add_edge("goodbye", END)
 
+# MEMORY
+memory = InMemorySaver()
+app_graph = graph.compile(checkpointer=memory)
+
+# API MODELS
 class ChatRequest(BaseModel):
     message: str
     thread_id: str = "default_user"
@@ -76,22 +87,17 @@ class ChatRequest(BaseModel):
 class ChatResponse(BaseModel):
     response: str
 
-memory = InMemorySaver()
-app_graph = graph.compile(checkpointer=memory)
-
+# API ENDPOINTS
 @app.post("/chat", response_model=ChatResponse)
 def chat(req: ChatRequest):
 
     config = {"configurable": {"thread_id": req.thread_id}}
 
-    system_prompt = SystemMessage(content="You are a helpful AI assistant. Be concise, accurate, and clear.")
+    input_messages = [HumanMessage(content=req.message)]
 
     output = app_graph.invoke(
         {
-            "messages": [
-                system_prompt,
-                HumanMessage(content=req.message)
-            ]
+            "messages": input_messages
         },
         config=config
     )
