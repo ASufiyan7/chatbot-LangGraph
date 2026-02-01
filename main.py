@@ -44,6 +44,7 @@ llm_tools = chat_model.bind_tools(tools)
 # State Definition
 class ChatState(TypedDict):
     messages: Annotated[List[BaseMessage], add_messages]
+    summary: str
 
 # Graph Definition
 def agent_node(state: ChatState):
