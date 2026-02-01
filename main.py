@@ -86,4 +86,14 @@ class ChatResponse(BaseModel):
 @app.post("/chat", response_model=ChatResponse)
 def chat(req: ChatRequest):
     config = {"configurable": {"thread_id": req.thread_id}}
-    
+
+    output = app_graph.invoke(
+        {"messages": [HumanMessage(content=req.message)]},
+        config=config,
+    )
+
+    return {"response": output["messages"][-1].content}
+
+@app.get("/")
+def root():
+    return {"status": "LangGraph HuggingFace Chatbot is running."}
