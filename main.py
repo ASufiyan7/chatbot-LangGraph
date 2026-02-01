@@ -4,7 +4,7 @@ from fastapi import FastAPI
 from pydantic import BaseModel
 from dotenv import load_dotenv
 
-from langchain_core.messages import HumanMessage, BaseMessage, SystemMessage
+from langchain_core.messages import HumanMessage, BaseMessage, SystemMessage, RemoveMessage
 from langchain_huggingface import ChatHuggingFace, HuggingFaceEndpoint
 from langchain_core.tools import tool
 from langgraph.checkpoint.memory import InMemorySaver
@@ -46,12 +46,38 @@ class ChatState(TypedDict):
     messages: Annotated[List[BaseMessage], add_messages]
     summary: str
 
+def summarize_conversation(state: ChatState) -> ChatState:
+    """Checks history length and creates a summary if needed."""
+    messages = state["messages"]
+
+    if len(messages) > 10:
+        return {"messages": [SystemMessage(content="Summarizing conversation...")], "summary": "Summary created."}
+    
+    existing_summary = state.get("summary", "")
+    if existing_summary:
+        summary_prompt = f"Extend the current summary: {existing_summary}\n\n With these new messages: {messages}\n"
+
+    else:
+        summary_prompt = f"Summarize the following conversation: {messages}\n"
+
+    response = chat_model.invoke(summary_prompt)
+
+    delete_messages = [RemoveMessage(id=m.id) for m in messages[:-2]]
+
+    return {
+        "summary": response.content,
+        "messages": delete_messages
+    }
+
 # Graph Definition
 def agent_node(state: ChatState):
     """The brain: Decides whether to talk to the user or call a tool."""
     messages = state["messages"]
-    if not any(isinstance(m, SystemMessage) for m in messages):
-        messages = [SystemMessage(content="You are a helpful assistant with access to tools")] + messages
+    summary = state.get("summary", "")
+
+    if summary:
+        system_msg = SystemMessage(content=f"Conversation summary: {summary}")
+        messages = [system_msg] + messages
 
     response = llm_tools.invoke(messages)
     return {"messages": [response]}
@@ -63,8 +89,10 @@ graph = StateGraph(ChatState)
 
 graph.add_node("agent", agent_node)
 graph.add_node("tools", tool_node)
+graph.add_node("summarize", summarize_conversation)
 
-graph.add_edge(START, "agent")
+graph.add_edge(START, "summarize")
+graph.add_edge("summarize", "agent")
 
 graph.add_conditional_edges(
     "agent",
