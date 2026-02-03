@@ -13,12 +13,13 @@ from langgraph.graph import StateGraph, START, END
 from langgraph.graph.message import add_messages
 from langgraph.prebuilt import ToolNode
 
+# Environment Setup
 load_dotenv()
 HF_TOKEN = os.getenv("HUGGINGFACE_API_KEY")
 
 app = FastAPI(title="Step 5: Planner-Executor Agent")
 
-# --- Model Setup ---
+# LLM Setup
 llm_engine = HuggingFaceEndpoint(
     repo_id="Qwen/Qwen2.5-7B-Instruct",
     task="text-generation",
@@ -27,7 +28,7 @@ llm_engine = HuggingFaceEndpoint(
 )
 chat_model = ChatHuggingFace(llm=llm_engine)
 
-# --- Tools ---
+# Tools
 @tool
 def multiply(a: int, b: int) -> int:
     """Multiplies two integers."""
@@ -41,14 +42,13 @@ def get_weather(city: str) -> str:
 tools = [multiply, get_weather]
 tool_node = ToolNode(tools)
 
-# --- Updated State for Step 5 ---
+# Agent State Definition
 class AgentState(TypedDict):
     messages: Annotated[List[BaseMessage], add_messages]
-    plan: List[str] # List of steps to follow
-    current_step: int # Track where we are in the plan
+    plan: List[str]
+    current_step: int 
 
-# --- Nodes ---
-
+# Nodes
 def planner_node(state: AgentState):
     user_input = state["messages"][-1].content
 
@@ -80,7 +80,6 @@ def executor_node(state: AgentState):
 
     step = plan[idx]
 
-    # 🚫 Guard: block math tools if no numbers
     if "multiply" in step.lower() and not any(ch.isdigit() for ch in step):
         return {
             "messages": [
@@ -113,14 +112,13 @@ def final_answer_node(state: AgentState):
     response = chat_model.invoke(state["messages"] + [SystemMessage(content="Summarize the results into a final answer for the user.")])
     return {"messages": [response]}
 
-# --- Conditional Logic ---
+# Decision Function
 def should_continue(state: AgentState) -> Literal["execute", "finalize"]:
-    # If we have steps left in the plan, keep executing
     if state["current_step"] < len(state["plan"]):
         return "execute"
     return "finalize"
 
-# --- Graph Construction ---
+# Graph Construction
 builder = StateGraph(AgentState)
 
 builder.add_node("planner", planner_node)
@@ -131,7 +129,7 @@ builder.add_node("final_answer", final_answer_node)
 builder.add_edge(START, "planner")
 builder.add_edge("planner", "executor")
 
-# The Executor loop: checks for tool calls
+# The Executor loop
 def executor_router(state: AgentState):
     last_msg = state["messages"][-1]
     if hasattr(last_msg, "tool_calls") and last_msg.tool_calls:
@@ -141,7 +139,7 @@ def executor_router(state: AgentState):
 builder.add_conditional_edges("executor", executor_router, {"tools": "tools", "check_plan": "planner_update"})
 
 # Logic to decide if we need to re-plan or finish
-builder.add_node("planner_update", lambda x: x) # Placeholder for more complex re-planning logic
+builder.add_node("planner_update", lambda x: x) 
 builder.add_conditional_edges("planner_update", should_continue, {"execute": "executor", "finalize": "final_answer"})
 
 builder.add_edge("tools", "executor")
