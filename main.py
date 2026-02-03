@@ -8,48 +8,54 @@ from dotenv import load_dotenv
 from langchain_core.messages import HumanMessage, BaseMessage, SystemMessage
 from langchain_huggingface import ChatHuggingFace, HuggingFaceEndpoint
 from langchain_core.tools import tool
-from langgraph.checkpoint.memory import InMemorySaver
+
 from langgraph.graph import StateGraph, START, END
 from langgraph.graph.message import add_messages
+from langgraph.checkpoint.memory import InMemorySaver
 from langgraph.prebuilt import ToolNode
 
-# Environment Setup
+# ENV
 load_dotenv()
 HF_TOKEN = os.getenv("HUGGINGFACE_API_KEY")
 
-app = FastAPI(title="Step 5: Planner-Executor Agent")
+app = FastAPI(title="Robust Planner–Executor LangGraph Agent")
 
-# LLM Setup
+# MODEL
 llm_engine = HuggingFaceEndpoint(
     repo_id="Qwen/Qwen2.5-7B-Instruct",
     task="text-generation",
     temperature=0.1,
     huggingfacehub_api_token=HF_TOKEN,
 )
+
 chat_model = ChatHuggingFace(llm=llm_engine)
 
-# Tools
+# TOOLS
 @tool
 def multiply(a: int, b: int) -> int:
-    """Multiplies two integers."""
+    """Multiply two integers."""
     return a * b
 
 @tool
 def get_weather(city: str) -> str:
-    """Gets the weather for a specific city."""
-    return f"The weather in {city} is sunny and 25°C."
+    """Get weather for a city."""
+    return f"The weather in {city} is sunny with 25°C."
 
 tools = [multiply, get_weather]
 tool_node = ToolNode(tools)
 
-# Agent State Definition
+# STATE
 class AgentState(TypedDict):
     messages: Annotated[List[BaseMessage], add_messages]
     plan: List[str]
-    current_step: int 
+    current_step: int
 
-# Nodes
+# NODES
 def planner_node(state: AgentState):
+    """
+    Create a strict plan.
+    If request is invalid, detect it explicitly.
+    """
     user_input = state["messages"][-1].content
 
     prompt = (
@@ -64,14 +70,19 @@ def planner_node(state: AgentState):
 
     if "INVALID_REQUEST" in response.content:
         return {
-            "plan": ["Explain why the request is invalid."],
+            "plan": ["Explain clearly why the request is invalid."],
             "current_step": 0,
         }
 
     plan = [s.strip() for s in response.content.split("\n") if s.strip()]
     return {"plan": plan, "current_step": 0}
 
+
 def executor_node(state: AgentState):
+    """
+    Execute ONE step safely.
+    Tools are guarded.
+    """
     idx = state["current_step"]
     plan = state["plan"]
 
@@ -80,18 +91,19 @@ def executor_node(state: AgentState):
 
     step = plan[idx]
 
+    # Block math tools if no numbers exist
     if "multiply" in step.lower() and not any(ch.isdigit() for ch in step):
         return {
             "messages": [
                 SystemMessage(
-                    content="This request cannot be completed because it does not contain valid numbers."
+                    content="I cannot perform multiplication because no valid numbers were provided."
                 )
             ],
             "current_step": len(plan),
         }
 
     system_msg = SystemMessage(
-        content=f"Execute this step carefully:\n{step}"
+        content=f"Execute the following step carefully:\n{step}"
     )
 
     llm_with_tools = chat_model.bind_tools(tools)
@@ -107,47 +119,62 @@ def executor_node(state: AgentState):
 
 
 def final_answer_node(state: AgentState):
-    """Summarizes all executed steps into a final response."""
-    print("--- LOG: Final Answer ---")
-    response = chat_model.invoke(state["messages"] + [SystemMessage(content="Summarize the results into a final answer for the user.")])
+    """Produce the final answer for the user."""
+    response = chat_model.invoke(
+        state["messages"]
+        + [SystemMessage(content="Provide a final clear answer to the user.")]
+    )
     return {"messages": [response]}
 
-# Decision Function
-def should_continue(state: AgentState) -> Literal["execute", "finalize"]:
-    if state["current_step"] < len(state["plan"]):
-        return "execute"
-    return "finalize"
-
-# Graph Construction
-builder = StateGraph(AgentState)
-
-builder.add_node("planner", planner_node)
-builder.add_node("executor", executor_node)
-builder.add_node("tools", tool_node)
-builder.add_node("final_answer", final_answer_node)
-
-builder.add_edge(START, "planner")
-builder.add_edge("planner", "executor")
-
-# The Executor loop
-def executor_router(state: AgentState):
+# ROUTERS
+def executor_router(state: AgentState) -> Literal["tools", "check_done"]:
     last_msg = state["messages"][-1]
     if hasattr(last_msg, "tool_calls") and last_msg.tool_calls:
         return "tools"
-    return "check_plan"
+    return "check_done"
 
-builder.add_conditional_edges("executor", executor_router, {"tools": "tools", "check_plan": "planner_update"})
 
-# Logic to decide if we need to re-plan or finish
-builder.add_node("planner_update", lambda x: x) 
-builder.add_conditional_edges("planner_update", should_continue, {"execute": "executor", "finalize": "final_answer"})
+def check_done(state: AgentState) -> Literal["execute", "final"]:
+    if state["current_step"] < len(state["plan"]):
+        return "execute"
+    return "final"
 
-builder.add_edge("tools", "executor")
-builder.add_edge("final_answer", END)
+# GRAPH
+graph = StateGraph(AgentState)
 
-app_graph = builder.compile(checkpointer=InMemorySaver())
+graph.add_node("planner", planner_node)
+graph.add_node("executor", executor_node)
+graph.add_node("tools", tool_node)
+graph.add_node("final", final_answer_node)
+graph.add_node("check_done", lambda x: x)
 
-# FastAPI API Layer
+graph.add_edge(START, "planner")
+graph.add_edge("planner", "executor")
+
+graph.add_conditional_edges(
+    "executor",
+    executor_router,
+    {
+        "tools": "tools",
+        "check_done": "check_done",
+    },
+)
+
+graph.add_conditional_edges(
+    "check_done",
+    check_done,
+    {
+        "execute": "executor",
+        "final": "final",
+    },
+)
+
+graph.add_edge("tools", "executor")
+graph.add_edge("final", END)
+
+app_graph = graph.compile(checkpointer=InMemorySaver())
+
+# API
 class ChatRequest(BaseModel):
     message: str
     thread_id: str = "default"
@@ -168,4 +195,4 @@ def chat(req: ChatRequest):
 
 @app.get("/")
 def root():
-    return {"status": "LangGraph Planner-Executor Chatbot running"}
+    return {"status": "Planner-Executor LangGraph Agent running"}
