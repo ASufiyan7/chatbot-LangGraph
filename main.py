@@ -5,7 +5,12 @@ from fastapi import FastAPI
 from pydantic import BaseModel
 from dotenv import load_dotenv
 
-from langchain_core.messages import HumanMessage, BaseMessage, SystemMessage
+from langchain_core.messages import (
+    HumanMessage,
+    BaseMessage,
+    SystemMessage,
+    AIMessage,
+)
 from langchain_huggingface import ChatHuggingFace, HuggingFaceEndpoint
 from langchain_core.tools import tool
 
@@ -18,7 +23,7 @@ from langgraph.prebuilt import ToolNode
 load_dotenv()
 HF_TOKEN = os.getenv("HUGGINGFACE_API_KEY")
 
-app = FastAPI(title="Multi-Agent LangGraph System")
+app = FastAPI(title="Multi-Agent LangGraph (Safe & Robust)")
 
 # MODEL
 llm_engine = HuggingFaceEndpoint(
@@ -36,10 +41,12 @@ def multiply(a: int, b: int) -> int:
     """Multiply two integers."""
     return a * b
 
+
 @tool
 def get_weather(city: str) -> str:
     """Get weather for a city."""
     return f"The weather in {city} is sunny with 25°C."
+
 
 math_tools = [multiply]
 research_tools = [get_weather]
@@ -51,10 +58,8 @@ research_tool_node = ToolNode(research_tools)
 class AgentState(TypedDict):
     messages: Annotated[List[BaseMessage], add_messages]
     task_type: str
-    research_result: str
-    math_result: str
 
-# SUPERVISOR
+# SUPERVISOR (ROUTER ONLY — NO TOOLS)
 def supervisor_node(state: AgentState):
     user_input = state["messages"][-1].content
 
@@ -93,25 +98,33 @@ def researcher_agent(state: AgentState):
 
     return {"messages": [response]}
 
-# MATH AGENT
+# MATH AGENT (SAFE)
 def math_agent(state: AgentState):
     user_text = state["messages"][-1].content
 
+    # 🚫 Invalid math → graceful failure (NO tools)
     if not any(ch.isdigit() for ch in user_text):
         return {
-            "math_result": "No valid numbers provided for calculation."
+            "messages": [
+                AIMessage(
+                    content=(
+                        "I can’t perform multiplication because the request "
+                        "does not contain valid numbers."
+                    )
+                )
+            ]
         }
 
     llm_with_tools = llm.bind_tools(math_tools)
 
     response = llm_with_tools.invoke(
-        [SystemMessage(content="You are a math expert. Use tools for calculations.")]
+        [SystemMessage(content="You are a math expert. Use tools only when valid.")]
         + state["messages"]
     )
 
     return {"messages": [response]}
 
-# FINAL AGGREGATOR
+# FINAL ANSWER
 def final_node(state: AgentState):
     response = llm.invoke(
         state["messages"]
@@ -119,9 +132,16 @@ def final_node(state: AgentState):
     )
     return {"messages": [response]}
 
-# ROUTING
+# ROUTERS
 def supervisor_router(state: AgentState) -> Literal["research", "math", "both", "direct"]:
     return state["task_type"]
+
+
+def math_router(state: AgentState) -> Literal["tools", "final"]:
+    last_msg = state["messages"][-1]
+    if hasattr(last_msg, "tool_calls") and last_msg.tool_calls:
+        return "tools"
+    return "final"
 
 # GRAPH
 graph = StateGraph(AgentState)
@@ -146,14 +166,21 @@ graph.add_conditional_edges(
     },
 )
 
-# Research flow
+# Research → tools → math
 graph.add_edge("researcher", "research_tools")
 graph.add_edge("research_tools", "math_agent")
 
-# Math flow
-graph.add_edge("math_agent", "math_tools")
-graph.add_edge("math_tools", "final")
+# Math → (router)
+graph.add_conditional_edges(
+    "math_agent",
+    math_router,
+    {
+        "tools": "math_tools",
+        "final": "final",
+    },
+)
 
+graph.add_edge("math_tools", "final")
 graph.add_edge("final", END)
 
 app_graph = graph.compile(checkpointer=InMemorySaver())
@@ -163,8 +190,10 @@ class ChatRequest(BaseModel):
     message: str
     thread_id: str = "default"
 
+
 class ChatResponse(BaseModel):
     response: str
+
 
 @app.post("/chat", response_model=ChatResponse)
 def chat(req: ChatRequest):
@@ -177,6 +206,7 @@ def chat(req: ChatRequest):
 
     return {"response": output["messages"][-1].content}
 
+
 @app.get("/")
 def root():
-    return {"status": "Multi-Agent LangGraph system running"}
+    return {"status": "Multi-Agent LangGraph system running safely"}
