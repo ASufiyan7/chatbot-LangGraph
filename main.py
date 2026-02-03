@@ -18,7 +18,7 @@ from langgraph.prebuilt import ToolNode
 load_dotenv()
 HF_TOKEN = os.getenv("HUGGINGFACE_API_KEY")
 
-app = FastAPI(title="Robust Planner–Executor LangGraph Agent")
+app = FastAPI(title="Multi-Agent LangGraph System")
 
 # MODEL
 llm_engine = HuggingFaceEndpoint(
@@ -28,7 +28,7 @@ llm_engine = HuggingFaceEndpoint(
     huggingfacehub_api_token=HF_TOKEN,
 )
 
-chat_model = ChatHuggingFace(llm=llm_engine)
+llm = ChatHuggingFace(llm=llm_engine)
 
 # TOOLS
 @tool
@@ -41,135 +41,119 @@ def get_weather(city: str) -> str:
     """Get weather for a city."""
     return f"The weather in {city} is sunny with 25°C."
 
-tools = [multiply, get_weather]
-tool_node = ToolNode(tools)
+math_tools = [multiply]
+research_tools = [get_weather]
+
+math_tool_node = ToolNode(math_tools)
+research_tool_node = ToolNode(research_tools)
 
 # STATE
 class AgentState(TypedDict):
     messages: Annotated[List[BaseMessage], add_messages]
-    plan: List[str]
-    current_step: int
+    task_type: str
+    research_result: str
+    math_result: str
 
-# NODES
-def planner_node(state: AgentState):
-    """
-    Create a strict plan.
-    If request is invalid, detect it explicitly.
-    """
+# SUPERVISOR
+def supervisor_node(state: AgentState):
     user_input = state["messages"][-1].content
 
     prompt = (
-        "You are a strict planner.\n"
-        "If the user request is invalid, ambiguous, or impossible, "
-        "respond with exactly: INVALID_REQUEST.\n\n"
-        "Otherwise, return a numbered step-by-step plan.\n\n"
+        "You are a supervisor.\n"
+        "Decide who should handle the task.\n\n"
+        "Return ONLY one word:\n"
+        "- research (info / weather)\n"
+        "- math (calculations)\n"
+        "- both (needs info + math)\n"
+        "- direct (just answer)\n\n"
         f"User request: {user_input}"
     )
 
-    response = chat_model.invoke(prompt)
+    decision = llm.invoke(prompt).content.lower().strip()
 
-    if "INVALID_REQUEST" in response.content:
-        return {
-            "plan": ["Explain clearly why the request is invalid."],
-            "current_step": 0,
-        }
+    if "both" in decision:
+        decision = "both"
+    elif "math" in decision:
+        decision = "math"
+    elif "research" in decision:
+        decision = "research"
+    else:
+        decision = "direct"
 
-    plan = [s.strip() for s in response.content.split("\n") if s.strip()]
-    return {"plan": plan, "current_step": 0}
+    return {"task_type": decision}
 
-
-def executor_node(state: AgentState):
-    """
-    Execute ONE step safely.
-    Tools are guarded.
-    """
-    idx = state["current_step"]
-    plan = state["plan"]
-
-    if idx >= len(plan):
-        return {}
-
-    step = plan[idx]
-
-    # Block math tools if no numbers exist
-    if "multiply" in step.lower() and not any(ch.isdigit() for ch in step):
-        return {
-            "messages": [
-                SystemMessage(
-                    content="I cannot perform multiplication because no valid numbers were provided."
-                )
-            ],
-            "current_step": len(plan),
-        }
-
-    system_msg = SystemMessage(
-        content=f"Execute the following step carefully:\n{step}"
-    )
-
-    llm_with_tools = chat_model.bind_tools(tools)
+# RESEARCHER AGENT
+def researcher_agent(state: AgentState):
+    llm_with_tools = llm.bind_tools(research_tools)
 
     response = llm_with_tools.invoke(
-        [system_msg] + state["messages"]
+        [SystemMessage(content="You are a researcher. Use tools if needed.")]
+        + state["messages"]
     )
 
-    return {
-        "messages": [response],
-        "current_step": idx + 1,
-    }
+    return {"messages": [response]}
 
+# MATH AGENT
+def math_agent(state: AgentState):
+    user_text = state["messages"][-1].content
 
-def final_answer_node(state: AgentState):
-    """Produce the final answer for the user."""
-    response = chat_model.invoke(
+    if not any(ch.isdigit() for ch in user_text):
+        return {
+            "math_result": "No valid numbers provided for calculation."
+        }
+
+    llm_with_tools = llm.bind_tools(math_tools)
+
+    response = llm_with_tools.invoke(
+        [SystemMessage(content="You are a math expert. Use tools for calculations.")]
+        + state["messages"]
+    )
+
+    return {"messages": [response]}
+
+# FINAL AGGREGATOR
+def final_node(state: AgentState):
+    response = llm.invoke(
         state["messages"]
-        + [SystemMessage(content="Provide a final clear answer to the user.")]
+        + [SystemMessage(content="Provide a clear final answer to the user.")]
     )
     return {"messages": [response]}
 
-# ROUTERS
-def executor_router(state: AgentState) -> Literal["tools", "check_done"]:
-    last_msg = state["messages"][-1]
-    if hasattr(last_msg, "tool_calls") and last_msg.tool_calls:
-        return "tools"
-    return "check_done"
-
-
-def check_done(state: AgentState) -> Literal["execute", "final"]:
-    if state["current_step"] < len(state["plan"]):
-        return "execute"
-    return "final"
+# ROUTING
+def supervisor_router(state: AgentState) -> Literal["research", "math", "both", "direct"]:
+    return state["task_type"]
 
 # GRAPH
 graph = StateGraph(AgentState)
 
-graph.add_node("planner", planner_node)
-graph.add_node("executor", executor_node)
-graph.add_node("tools", tool_node)
-graph.add_node("final", final_answer_node)
-graph.add_node("check_done", lambda x: x)
+graph.add_node("supervisor", supervisor_node)
+graph.add_node("researcher", researcher_agent)
+graph.add_node("research_tools", research_tool_node)
+graph.add_node("math_agent", math_agent)
+graph.add_node("math_tools", math_tool_node)
+graph.add_node("final", final_node)
 
-graph.add_edge(START, "planner")
-graph.add_edge("planner", "executor")
+graph.add_edge(START, "supervisor")
 
 graph.add_conditional_edges(
-    "executor",
-    executor_router,
+    "supervisor",
+    supervisor_router,
     {
-        "tools": "tools",
-        "check_done": "check_done",
+        "research": "researcher",
+        "math": "math_agent",
+        "both": "researcher",
+        "direct": "final",
     },
 )
 
-graph.add_conditional_edges(
-    "check_done",
-    check_done,
-    {
-        "execute": "executor",
-        "final": "final",
-    },
-)
+# Research flow
+graph.add_edge("researcher", "research_tools")
+graph.add_edge("research_tools", "math_agent")
 
-graph.add_edge("tools", "executor")
+# Math flow
+graph.add_edge("math_agent", "math_tools")
+graph.add_edge("math_tools", "final")
+
 graph.add_edge("final", END)
 
 app_graph = graph.compile(checkpointer=InMemorySaver())
@@ -195,4 +179,4 @@ def chat(req: ChatRequest):
 
 @app.get("/")
 def root():
-    return {"status": "Planner-Executor LangGraph Agent running"}
+    return {"status": "Multi-Agent LangGraph system running"}
