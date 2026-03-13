@@ -79,27 +79,26 @@ def _run_docker(code: str, language: str) -> dict:
     clean_code = _strip_markdown_fences(code)
 
     if language == "python":
-        image    = "python:3.12-slim"
-        cmd_flag = "python3 -c"
+        image       = "python:3.12-slim"
+        interpreter = "python3"
     else:
-        image    = "node:20-slim"
-        cmd_flag = "node -e"
+        image       = "node:20-slim"
+        interpreter = "node"
 
-    # escape double quotes in code so shell doesn't break
-    escaped = clean_code.replace('"', '\\"')
-
+    # Notice the added "-i" flag to keep STDIN open
     docker_cmd = [
-        "docker", "run", "--rm",
+        "docker", "run", "--rm", "-i",
         "--memory", SANDBOX_MEMORY_LIMIT,
         "--network", "none",
         "--cpus", "0.5",
         image,
-        "sh", "-c", f'{cmd_flag} "{escaped}"',
+        interpreter,
     ]
 
     try:
         result = subprocess.run(
             docker_cmd,
+            input=clean_code,  # <-- Safely pipe code directly to STDIN
             capture_output=True,
             text=True,
             timeout=SANDBOX_TIMEOUT + 10,
@@ -115,7 +114,6 @@ def _run_docker(code: str, language: str) -> dict:
             "stderr":    f"⏱ Docker execution timed out after {SANDBOX_TIMEOUT}s",
             "exit_code": -1,
         }
-
 
 # ── LangChain tool ────────────────────────────────────────────────────────────
 

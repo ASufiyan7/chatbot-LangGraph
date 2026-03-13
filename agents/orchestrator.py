@@ -3,6 +3,7 @@ orchestrator.py  –  NEXUS Orchestrator Agent
 """
 from __future__ import annotations
 import re
+import time
 from langchain_core.messages import SystemMessage, HumanMessage
 from config.llm_factory import get_llm
 from graph.state import NexusState
@@ -32,7 +33,7 @@ PLAN:
 """
 
 def orchestrator_node(state: NexusState) -> dict:
-    llm = get_llm(temperature=0.1)
+    llm = get_llm(provider="groq", temperature=0.1)
     user_message = state["messages"][-1].content
 
     memory_ctx = recall_memory(user_message)
@@ -45,6 +46,8 @@ def orchestrator_node(state: NexusState) -> dict:
         )
 
     full_user_content = user_message + memory_block
+
+    time.sleep(2) 
 
     response = llm.invoke([
         SystemMessage(content=SYSTEM_PROMPT),

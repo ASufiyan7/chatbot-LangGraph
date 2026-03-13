@@ -30,7 +30,7 @@ IMPORTANT: Output the code in a single ```{language} ... ``` block, then call ex
 """
 
 def coder_node(state: NexusState) -> dict:
-    llm = get_llm(temperature=0.2)
+    llm = get_llm(provider="ollama", model_name="deepseek-coder:6.7b", temperature=0.2)
     llm_with_tools = llm.bind_tools(CODER_TOOLS)
 
     system = SYSTEM_PROMPT.format(language=state.get("language", "python"))

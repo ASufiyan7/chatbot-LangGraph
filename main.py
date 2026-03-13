@@ -15,7 +15,7 @@ sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 import asyncio
 import json
 
-from fastapi import FastAPI, WebSocket, WebSocketDisconnect
+from fastapi import FastAPI, WebSocket, WebSocketDisconnect, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel
 
@@ -62,11 +62,22 @@ class ChatResponse(BaseModel):
 async def chat(req: ChatRequest):
     config = {"configurable": {"thread_id": req.thread_id}}
 
-    output = await asyncio.to_thread(
-        nexus_graph.invoke,
-        {"messages": [HumanMessage(content=req.message)]},
-        config,
-    )
+    try:
+        output = await asyncio.to_thread(
+            nexus_graph.invoke,
+            {"messages": [HumanMessage(content=req.message)]},
+            config,
+        )
+    except Exception as exc:
+        # Common failure mode: quota / rate limit on Gemini API.
+        raise HTTPException(
+            status_code=503,
+            detail=(
+                "LLM request failed (possible quota/rate-limit issue). "
+                "Check your Gemini billing/quota or change model via GEMINI_MODEL. "
+                f"Original error: {exc}"
+            ),
+        )
 
     return ChatResponse(
         thread_id        = req.thread_id,

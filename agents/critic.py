@@ -2,40 +2,41 @@
 critic.py  –  NEXUS Critic / Reflector Agent
 """
 from __future__ import annotations
-import re
 from langchain_core.messages import SystemMessage, HumanMessage, AIMessage
+from langchain_core.runnables import RunnableConfig
+from pydantic import BaseModel, Field
 from config.llm_factory import get_llm
 from config.settings import CRITIC_PASS_THRESHOLD, MAX_REVISION_LOOPS
-from graph.state import NexusState, CriticScore
+from graph.state import NexusState
 from memory.memory import save_memory
+
+# 1. Define the exact schema we want the LLM to output
+class CriticOutput(BaseModel):
+    correctness: float = Field(description="Does the code correctly solve the stated task? Score 0.0 to 1.0.")
+    security: float = Field(description="Is the code free of dangerous patterns? Score 0.0 to 1.0.")
+    style: float = Field(description="Is the code clean and readable? Score 0.0 to 1.0.")
+    overall: float = Field(description="Weighted average: 0.5*correctness + 0.3*security + 0.2*style")
+    feedback: str = Field(description="One sentence explaining the biggest remaining issue, or 'Looks great!'")
 
 SYSTEM_PROMPT = """You are NEXUS Critic — a ruthlessly objective quality gate.
 
-Score the code on three dimensions (each 0.0 – 1.0):
-  • CORRECTNESS : Does the code correctly solve the stated task? (weighted 0.5)
-  • SECURITY    : Is the code free of dangerous patterns? (weighted 0.3)
-  • STYLE       : Is the code clean and readable? (weighted 0.2)
-
-Compute: OVERALL = 0.5*correctness + 0.3*security + 0.2*style
-
-Also write one FEEDBACK sentence explaining the biggest remaining issue (or "Looks great!" if overall ≥ 0.85).
-
-Respond in EXACTLY this format (numbers only, no % signs):
-CORRECTNESS: <0.0-1.0>
-SECURITY: <0.0-1.0>
-STYLE: <0.0-1.0>
-OVERALL: <0.0-1.0>
-FEEDBACK: <one sentence>
+Score the provided code on Correctness (weight 0.5), Security (weight 0.3), and Style (weight 0.2).
+Compute the OVERALL score using those weights.
 """
 
-def critic_node(state: NexusState) -> dict:
+def critic_node(state: NexusState, config: RunnableConfig) -> dict:
     llm = get_llm(temperature=0.0)
+    
+    # 2. Bind the Pydantic model to force structured JSON output
+    structured_llm = llm.with_structured_output(CriticOutput)
 
     code     = state.get("generated_code", "")
     task     = state["messages"][0].content
     review   = state.get("review_notes", "")
     exec_res = state.get("execution_result", "")
     exec_ok  = state.get("execution_ok", False)
+
+    session_id = config.get("configurable", {}).get("thread_id", "default_nexus_session")
 
     context = (
         f"TASK: {task}\n\n"
@@ -44,17 +45,18 @@ def critic_node(state: NexusState) -> dict:
         f"REVIEWER NOTES:\n{review}"
     )
 
-    response = llm.invoke([
+    # 3. Invoke directly returns our Pydantic object, no regex needed!
+    result = structured_llm.invoke([
         SystemMessage(content=SYSTEM_PROMPT),
         HumanMessage(content=context),
     ])
-
-    raw   = response.content.strip()
-    score = _parse_score(raw)
+    
+    # Convert Pydantic object back to dictionary for the LangGraph state
+    score = result.model_dump()
 
     if score["overall"] >= CRITIC_PASS_THRESHOLD:
         save_memory(
-            session_id="nexus",
+            session_id=session_id,
             task=task,
             code=code,
             outcome=exec_res,
@@ -84,29 +86,3 @@ def critic_router(state: NexusState) -> str:
     if score["overall"] < CRITIC_PASS_THRESHOLD and revision < MAX_REVISION_LOOPS:
         return "revise"
     return "respond"
-
-def _parse_score(text: str) -> CriticScore:
-    def _f(pattern: str) -> float:
-        m = re.search(pattern, text, re.IGNORECASE)
-        if m:
-            try:
-                return min(max(float(m.group(1)), 0.0), 1.0)
-            except ValueError:
-                pass
-        return 0.5
-
-    correctness = _f(r"CORRECTNESS:\s*([\d.]+)")
-    security    = _f(r"SECURITY:\s*([\d.]+)")
-    style       = _f(r"STYLE:\s*([\d.]+)")
-    overall     = _f(r"OVERALL:\s*([\d.]+)")
-
-    m_fb = re.search(r"FEEDBACK:\s*(.+)", text, re.IGNORECASE)
-    feedback = m_fb.group(1).strip() if m_fb else "No feedback."
-
-    return CriticScore(
-        correctness=correctness,
-        security=security,
-        style=style,
-        overall=overall,
-        feedback=feedback,
-    )

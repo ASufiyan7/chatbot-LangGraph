@@ -37,7 +37,7 @@ FIXED CODE:
 """
 
 def debugger_node(state: NexusState) -> dict:
-    llm = get_llm(temperature=0.1)
+    llm = get_llm(provider="ollama", model_name="deepseek-coder:6.7b", temperature=0.1)
     llm_with_tools = llm.bind_tools(DEBUGGER_TOOLS)
 
     language = state.get("language", "python")

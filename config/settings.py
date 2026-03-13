@@ -8,7 +8,9 @@ load_dotenv()
 
 # ── LLM ───────────────────────────────────────────────────────────────────────
 GEMINI_API_KEY = os.getenv("GEMINI_API_KEY")
-GEMINI_MODEL   = os.getenv("GEMINI_MODEL", "gemini-2.0-flash")
+GEMINI_MODEL   = os.getenv("GEMINI_MODEL", "gemini-2.5-flash")
+GROQ_API_KEY   = os.getenv("GROQ_API_KEY")
+OLLAMA_BASE_URL = os.getenv("OLLAMA_BASE_URL", "http://localhost:11434")
 
 # ── Execution Sandbox ─────────────────────────────────────────────────────────
 SANDBOX_TIMEOUT      = int(os.getenv("SANDBOX_TIMEOUT", "15"))
