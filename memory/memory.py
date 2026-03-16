@@ -1,12 +1,5 @@
-"""
-memory.py  –  NEXUS episodic memory layer (ChromaDB-backed).
 
-Agents call:
-  • save_memory(session_id, task, code, outcome, score)  →  persists a coding episode
-  • recall_memory(query, n)                              →  retrieves relevant past episodes
-"""
 from __future__ import annotations
-
 import hashlib
 from datetime import datetime
 
@@ -20,7 +13,7 @@ except ImportError:
 from config.settings import CHROMA_PERSIST_DIR, MEMORY_COLLECTION, MAX_MEMORY_RESULTS
 
 
-# ── client singleton ──────────────────────────────────────────────────────────
+#  client singleton 
 
 _client     = None
 _collection = None
@@ -47,8 +40,6 @@ def _get_collection():
 
     return _collection
 
-
-# ── public API ────────────────────────────────────────────────────────────────
 
 def save_memory(
     session_id: str,
@@ -128,7 +119,7 @@ def recall_memory(query: str, n: int = MAX_MEMORY_RESULTS) -> str:
 
     snippets = []
     for doc, meta in zip(docs, metadatas):
-        ts    = meta.get("timestamp", "")[:10]   # just the date
+        ts    = meta.get("timestamp", "")[:10]   
         score = meta.get("score", 0)
         snippets.append(
             f"[Past Episode | {ts} | Score: {score:.2f}]\n{doc}"
@@ -136,8 +127,6 @@ def recall_memory(query: str, n: int = MAX_MEMORY_RESULTS) -> str:
 
     return "\n\n---\n\n".join(snippets)
 
-
-# ── internal helper ───────────────────────────────────────────────────────────
 
 def _detect_language(code: str) -> str:
     code_lower = code.lower()

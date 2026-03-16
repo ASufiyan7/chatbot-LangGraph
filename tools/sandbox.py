@@ -1,25 +1,18 @@
-"""
-sandbox.py  –  Secure code execution tool for NEXUS agents.
 
-Two modes:
-  • USE_DOCKER_SANDBOX=false  →  subprocess with timeout (default, easy setup)
-  • USE_DOCKER_SANDBOX=true   →  Docker container with memory cap (production)
-"""
 from __future__ import annotations
-
+import os
 import subprocess
 import sys
 import tempfile
-import os
 
 from langchain_core.tools import tool
-from config.settings import SANDBOX_TIMEOUT, USE_DOCKER_SANDBOX, SANDBOX_MEMORY_LIMIT
+from config.settings import SANDBOX_MEMORY_LIMIT, SANDBOX_TIMEOUT, USE_DOCKER_SANDBOX
 
 
-# ── helpers ───────────────────────────────────────────────────────────────────
+#  Helpers 
 
 def _strip_markdown_fences(code: str) -> str:
-    """Remove ```python ... ``` wrappers if the LLM added them."""
+   
     lines = code.strip().splitlines()
     if lines and lines[0].startswith("```"):
         lines = lines[1:]
@@ -29,22 +22,15 @@ def _strip_markdown_fences(code: str) -> str:
 
 
 def _run_subprocess(code: str, language: str) -> dict:
-    """Run code in a local subprocess with a hard timeout."""
     clean_code = _strip_markdown_fences(code)
+    suffix     = ".py" if language == "python" else ".js"
 
-    suffix = ".py" if language == "python" else ".js"
-
-    with tempfile.NamedTemporaryFile(
-        mode="w",
-        suffix=suffix,
-        delete=False,
-    ) as f:
+    with tempfile.NamedTemporaryFile(mode="w", suffix=suffix, delete=False) as f:
         f.write(clean_code)
         tmp_path = f.name
 
     try:
         interpreter = sys.executable if language == "python" else "node"
-
         result = subprocess.run(
             [interpreter, tmp_path],
             capture_output=True,
@@ -58,47 +44,31 @@ def _run_subprocess(code: str, language: str) -> dict:
         }
 
     except subprocess.TimeoutExpired:
-        return {
-            "stdout":    "",
-            "stderr":    f"⏱ Execution timed out after {SANDBOX_TIMEOUT}s",
-            "exit_code": -1,
-        }
+        return {"stdout": "", "stderr": f"⏱ Timed out after {SANDBOX_TIMEOUT}s", "exit_code": -1}
     except FileNotFoundError:
-        interpreter = sys.executable if language == "python" else "node"
-        return {
-            "stdout":    "",
-            "stderr":    f"Interpreter '{interpreter}' not found",
-            "exit_code": -1,
-        }
+        interp = sys.executable if language == "python" else "node"
+        return {"stdout": "", "stderr": f"Interpreter '{interp}' not found", "exit_code": -1}
     finally:
         os.unlink(tmp_path)
 
 
 def _run_docker(code: str, language: str) -> dict:
-    """Run code inside a disposable Docker container."""
-    clean_code = _strip_markdown_fences(code)
+    clean_code  = _strip_markdown_fences(code)
+    image       = "python:3.12-slim" if language == "python" else "node:20-slim"
+    interpreter = "python3"          if language == "python" else "node"
 
-    if language == "python":
-        image       = "python:3.12-slim"
-        interpreter = "python3"
-    else:
-        image       = "node:20-slim"
-        interpreter = "node"
-
-    # Notice the added "-i" flag to keep STDIN open
     docker_cmd = [
         "docker", "run", "--rm", "-i",
         "--memory", SANDBOX_MEMORY_LIMIT,
         "--network", "none",
         "--cpus", "0.5",
-        image,
-        interpreter,
+        image, interpreter,
     ]
 
     try:
         result = subprocess.run(
             docker_cmd,
-            input=clean_code,  # <-- Safely pipe code directly to STDIN
+            input=clean_code,
             capture_output=True,
             text=True,
             timeout=SANDBOX_TIMEOUT + 10,
@@ -109,31 +79,26 @@ def _run_docker(code: str, language: str) -> dict:
             "exit_code": result.returncode,
         }
     except subprocess.TimeoutExpired:
-        return {
-            "stdout":    "",
-            "stderr":    f"⏱ Docker execution timed out after {SANDBOX_TIMEOUT}s",
-            "exit_code": -1,
-        }
+        return {"stdout": "", "stderr": f"⏱ Docker timed out after {SANDBOX_TIMEOUT}s", "exit_code": -1}
 
-# ── LangChain tool ────────────────────────────────────────────────────────────
+
+#  LangChain tool 
 
 @tool
 def execute_code(code: str, language: str = "python") -> str:
     """
-    Execute code in a secure sandbox and return the output.
+    Execute code in a secure sandbox and return formatted output.
 
     Args:
-        code:     The source code to run (Python or JavaScript).
+        code:     Source code to run (Python or JavaScript).
         language: 'python' (default) or 'javascript'.
 
     Returns:
-        A formatted string with stdout, stderr, and exit status.
+        Formatted string with stdout, stderr, and exit status.
     """
     language = language.lower().strip()
-
     if language == "js":
         language = "javascript"
-
     if language not in ("python", "javascript"):
         return "❌ Unsupported language. Use 'python' or 'javascript'."
 
@@ -141,14 +106,11 @@ def execute_code(code: str, language: str = "python") -> str:
     result = runner(code, language)
 
     lines = []
-
     if result["stdout"]:
         lines.append(f"📤 STDOUT:\n{result['stdout']}")
-
     if result["stderr"]:
         lines.append(f"⚠️  STDERR:\n{result['stderr']}")
 
     status = "✅" if result["exit_code"] == 0 else "❌"
     lines.append(f"{status} Exit code: {result['exit_code']}")
-
     return "\n\n".join(lines)

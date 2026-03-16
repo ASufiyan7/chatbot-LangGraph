@@ -1,60 +1,65 @@
-"""
-orchestrator.py  –  NEXUS Orchestrator Agent
-"""
+
 from __future__ import annotations
 import re
-import time
-from langchain_core.messages import SystemMessage, HumanMessage
-from config.llm_factory import get_llm
+
+from langchain_core.messages import HumanMessage, SystemMessage
+from config.llm_factory import get_llm, invoke_with_limit
+from config.settings import GROQ_API_KEY
 from graph.state import NexusState
 from memory.memory import recall_memory
 
-SYSTEM_PROMPT = """You are NEXUS Orchestrator — the strategic brain of an autonomous software engineering system.
+SYSTEM_PROMPT = """\
+You are NEXUS Orchestrator — the strategic planner of an autonomous coding system.
 
-Your job is to:
-1. Classify the user request into EXACTLY one task type:
-   - code_gen   : user wants new code written
-   - debug      : user has broken/buggy code to fix
-   - review     : user wants code quality / security analysis
-   - explain    : user wants code explained or documented
-   - direct     : general question, no code work needed
+Your job (do ALL three):
+1. Classify the request into EXACTLY one task type:
+   - code_gen   → write new code
+   - debug      → fix broken/buggy code the user provided
+   - review     → analyse code for quality / security
+   - explain    → explain or document existing code
+   - direct     → general question, no code needed
 
-2. Write a numbered step-by-step PLAN (3-5 steps) for how the agent team will solve this.
+2. Detect the programming language (python, javascript, java, etc., or "unknown").
 
-3. Detect the programming language (python, javascript, java, etc. — or "unknown").
+3. Write a numbered PLAN (3–5 steps) describing how the agent team will solve this.
+   Keep each step to one short sentence.
 
-Respond in EXACTLY this format (no extra text):
-TASK_TYPE: <one of the types above>
-LANGUAGE: <language or unknown>
+Respond in EXACTLY this format — no preamble, no extra text:
+TASK_TYPE: <type>
+LANGUAGE: <language>
 PLAN:
-1. <step one>
-2. <step two>
-3. <step three>
+1. <step>
+2. <step>
+3. <step>
 """
 
+
 def orchestrator_node(state: NexusState) -> dict:
-    llm = get_llm(provider="groq", temperature=0.1)
+    provider = "groq" if GROQ_API_KEY else "gemini"
+    llm = get_llm(provider=provider, temperature=0.1)
+
     user_message = state["messages"][-1].content
 
+    # Pull relevant past episodes from memory 
     memory_ctx = recall_memory(user_message)
     memory_block = ""
     if memory_ctx:
         memory_block = (
-            "\n\n[RELEVANT PAST EPISODES FROM MEMORY]\n"
+            "\n\n[RELEVANT PAST EPISODES]\n"
             + memory_ctx
             + "\n[END MEMORY]\n"
         )
 
-    full_user_content = user_message + memory_block
+    response = invoke_with_limit(
+        llm,
+        [
+            SystemMessage(content=SYSTEM_PROMPT),
+            HumanMessage(content=user_message + memory_block),
+        ],
+        provider=provider,
+    )
 
-    time.sleep(2) 
-
-    response = llm.invoke([
-        SystemMessage(content=SYSTEM_PROMPT),
-        HumanMessage(content=full_user_content),
-    ])
-
-    raw = response.content.strip()
+    raw = str(response.content).strip()
 
     task_type = _extract(r"TASK_TYPE:\s*(\w+)", raw, default="code_gen")
     language  = _extract(r"LANGUAGE:\s*(\w+)",  raw, default="python")
@@ -70,11 +75,16 @@ def orchestrator_node(state: NexusState) -> dict:
         "plan":           plan,
         "memory_context": memory_ctx,
         "revision_count": 0,
+        "exec_retries":   0,
     }
+
+
+#  helpers
 
 def _extract(pattern: str, text: str, default: str = "") -> str:
     m = re.search(pattern, text, re.IGNORECASE)
     return m.group(1).lower().strip() if m else default
+
 
 def _extract_plan(text: str) -> str:
     m = re.search(r"PLAN:\s*([\s\S]+)", text, re.IGNORECASE)

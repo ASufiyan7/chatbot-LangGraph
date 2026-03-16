@@ -1,12 +1,3 @@
-"""
-main.py  –  NEXUS FastAPI server
-
-Endpoints:
-  POST /chat              – standard request/response
-  WS   /ws/chat/{tid}     – streaming WebSocket (agent events in real-time)
-  GET  /graph/schema      – returns the graph structure for frontend viz
-  GET  /health            – health check
-"""
 from __future__ import annotations
 import sys
 import os
@@ -15,19 +6,18 @@ sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 import asyncio
 import json
 
-from fastapi import FastAPI, WebSocket, WebSocketDisconnect, HTTPException
+from fastapi import FastAPI, HTTPException, WebSocket, WebSocketDisconnect
 from fastapi.middleware.cors import CORSMiddleware
-from pydantic import BaseModel
-
 from langchain_core.messages import HumanMessage
+from pydantic import BaseModel
 
 from graph.nexus_graph import nexus_graph
 
-# ── app ───────────────────────────────────────────────────────────────────────
+
 app = FastAPI(
-    title="NEXUS — Autonomous Multi-Agent Software Engineer",
-    description="Self-correcting, memory-augmented AI coding system",
-    version="1.0.0",
+    title="NEXUS — Autonomous Multi-Agent Software Engineer (v2)",
+    description="4-agent, rate-limit-aware, resource-efficient coding system",
+    version="2.0.0",
 )
 
 app.add_middleware(
@@ -37,7 +27,7 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
-# ── schemas ───────────────────────────────────────────────────────────────────
+
 class ChatRequest(BaseModel):
     message:   str
     thread_id: str = "default"
@@ -52,12 +42,13 @@ class ChatResponse(BaseModel):
     generated_code:   str
     execution_result: str
     execution_ok:     bool
-    review_notes:     str
-    critic_score:     dict | None
+    quality_score:    dict | None
     revision_count:   int
+    exec_retries:     int
 
 
-# ── REST endpoint ─────────────────────────────────────────────────────────────
+#  REST endpoint 
+
 @app.post("/chat", response_model=ChatResponse)
 async def chat(req: ChatRequest):
     config = {"configurable": {"thread_id": req.thread_id}}
@@ -69,12 +60,12 @@ async def chat(req: ChatRequest):
             config,
         )
     except Exception as exc:
-        # Common failure mode: quota / rate limit on Gemini API.
         raise HTTPException(
             status_code=503,
             detail=(
-                "LLM request failed (possible quota/rate-limit issue). "
-                "Check your Gemini billing/quota or change model via GEMINI_MODEL. "
+                "Agent pipeline failed. This is often a quota or rate-limit issue "
+                "on Groq / Gemini free tiers. The system will retry automatically "
+                "next request. "
                 f"Original error: {exc}"
             ),
         )
@@ -88,22 +79,21 @@ async def chat(req: ChatRequest):
         generated_code   = output.get("generated_code", ""),
         execution_result = output.get("execution_result", ""),
         execution_ok     = output.get("execution_ok", False),
-        review_notes     = output.get("review_notes", ""),
-        critic_score     = output.get("critic_score"),
+        quality_score    = output.get("quality_score"),
         revision_count   = output.get("revision_count", 0),
+        exec_retries     = output.get("exec_retries", 0),
     )
 
 
-# ── WebSocket streaming ───────────────────────────────────────────────────────
-_AGENT_NODES = {
-    "orchestrator", "coder", "debugger",
-    "reviewer",     "critic", "responder",
-}
+#  WebSocket streaming
+
+_AGENT_NODES = {"orchestrator", "coder", "quality_gate", "responder"}
+
 
 @app.websocket("/ws/chat/{thread_id}")
 async def ws_chat(websocket: WebSocket, thread_id: str):
     """
-    Stream agent events to the frontend in real-time.
+    Stream agent events to the frontend.
     Message format: { "event": str, "node": str, "data": str }
     """
     await websocket.accept()
@@ -158,40 +148,44 @@ async def ws_chat(websocket: WebSocket, thread_id: str):
         })
 
 
-# ── graph schema for frontend visualisation ───────────────────────────────────
+#  Graph schema for frontend visualisation 
 @app.get("/graph/schema")
 def graph_schema():
     return {
         "nodes": [
-            {"id": "orchestrator", "label": "Orchestrator", "type": "planner",  "color": "#6366f1"},
-            {"id": "coder",        "label": "Coder",         "type": "worker",   "color": "#22c55e"},
-            {"id": "coder_tools",  "label": "Sandbox",       "type": "tool",     "color": "#f59e0b"},
-            {"id": "debugger",     "label": "Debugger",      "type": "worker",   "color": "#ef4444"},
-            {"id": "reviewer",     "label": "Reviewer",      "type": "reviewer", "color": "#8b5cf6"},
-            {"id": "critic",       "label": "Critic",        "type": "critic",   "color": "#f97316"},
-            {"id": "responder",    "label": "Responder",     "type": "output",   "color": "#14b8a6"},
+            {"id": "orchestrator",  "label": "Orchestrator",   "type": "planner",  "color": "#6366f1", "provider": "groq"},
+            {"id": "coder",         "label": "Coder+Executor", "type": "worker",   "color": "#14b8a6", "provider": "ollama"},
+            {"id": "quality_gate",  "label": "Quality Gate",   "type": "reviewer", "color": "#f97316", "provider": "gemini"},
+            {"id": "responder",     "label": "Responder",      "type": "output",   "color": "#6366f1", "provider": "gemini"},
         ],
         "edges": [
-            {"from": "orchestrator", "to": "coder",       "label": "code task"},
-            {"from": "orchestrator", "to": "responder",   "label": "direct"},
-            {"from": "coder",        "to": "coder_tools", "label": "execute"},
-            {"from": "coder",        "to": "debugger",    "label": "skip exec"},
-            {"from": "coder_tools",  "to": "debugger",    "label": "error"},
-            {"from": "coder_tools",  "to": "reviewer",    "label": "ok"},
-            {"from": "debugger",     "to": "reviewer",    "label": "fixed"},
-            {"from": "reviewer",     "to": "critic",      "label": "reviewed"},
-            {"from": "critic",       "to": "responder",   "label": "pass ✅"},
-            {"from": "critic",       "to": "coder",       "label": "revise 🔁"},
-            {"from": "responder",    "to": "END",         "label": "done"},
+            {"from": "orchestrator", "to": "coder",        "label": "code task"},
+            {"from": "orchestrator", "to": "responder",    "label": "direct / explain"},
+            {"from": "coder",        "to": "quality_gate", "label": "review + score"},
+            {"from": "quality_gate", "to": "responder",    "label": "pass ✅"},
+            {"from": "quality_gate", "to": "coder",        "label": "revise 🔁"},
+            {"from": "responder",    "to": "END",          "label": "done"},
         ],
+        "providers": {
+            "groq":   {"color": "#22c55e", "label": "Groq (fast routing)"},
+            "ollama": {"color": "#3b82f6", "label": "Ollama (local coding)"},
+            "gemini": {"color": "#a855f7", "label": "Gemini (quality + response)"},
+        },
     }
 
 
-# ── health check ──────────────────────────────────────────────────────────────
+#  Health check 
+
 @app.get("/health")
 def health():
     return {
-        "status":  "NEXUS online",
+        "status":  "NEXUS v2 online",
         "agents":  list(_AGENT_NODES),
-        "version": "1.0.0",
+        "version": "2.0.0",
+        "providers": {
+            "orchestrator":  "groq",
+            "coder":         "ollama",
+            "quality_gate":  "gemini",
+            "responder":     "gemini",
+        },
     }

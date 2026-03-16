@@ -1,0 +1,87 @@
+version: "3.9"
+
+# ── NEXUS v2 — Docker Compose ─────────────────────────────────────────────────
+# Starts two services:
+#   nexus  — the FastAPI multi-agent server
+#   ollama — the local LLM server (llama3.1:8b)
+#
+# Usage:
+#   docker compose up --build          # first run (builds image, pulls ollama model)
+#   docker compose up -d               # background mode after first build
+#   docker compose down                # stop everything
+#   docker compose logs -f nexus       # watch server logs
+# ─────────────────────────────────────────────────────────────────────────────
+
+services:
+
+  # ── Ollama — local LLM ──────────────────────────────────────────────────────
+  ollama:
+    image: ollama/ollama:latest
+    container_name: nexus_ollama
+    restart: unless-stopped
+    ports:
+      - "11434:11434"
+    volumes:
+      # Persist downloaded models so you don't re-download on every restart
+      - ollama_data:/root/.ollama
+    # Pull the model automatically on first start
+    # Remove this entrypoint line once the model is already downloaded
+    entrypoint: ["/bin/sh", "-c", "ollama serve & sleep 5 && ollama pull llama3.1:8b && wait"]
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:11434"]
+      interval: 30s
+      timeout: 10s
+      retries: 5
+      start_period: 60s   # model pull can take a few minutes
+
+  # ── NEXUS FastAPI server ────────────────────────────────────────────────────
+  nexus:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    container_name: nexus_app
+    restart: unless-stopped
+    ports:
+      - "8000:8000"
+    depends_on:
+      ollama:
+        condition: service_healthy
+    environment:
+      # ── Required: set your actual keys here or use a .env file ─────────────
+      - GROQ_API_KEY=${GROQ_API_KEY}
+      - GEMINI_API_KEY=${GEMINI_API_KEY:-}          # optional — leave blank if not used
+
+      # ── LLM routing ─────────────────────────────────────────────────────────
+      - GEMINI_MODEL=${GEMINI_MODEL:-gemini-2.0-flash}
+      - OLLAMA_MODEL=${OLLAMA_MODEL:-llama3.1:8b}
+      # Point to the ollama service name, not localhost
+      - OLLAMA_BASE_URL=http://ollama:11434
+
+      # ── Quality thresholds ───────────────────────────────────────────────────
+      - QUALITY_THRESHOLD=${QUALITY_THRESHOLD:-0.70}
+      - MAX_REVISION_LOOPS=${MAX_REVISION_LOOPS:-2}
+      - MAX_EXEC_RETRIES=${MAX_EXEC_RETRIES:-2}
+
+      # ── Sandbox ──────────────────────────────────────────────────────────────
+      - SANDBOX_TIMEOUT=${SANDBOX_TIMEOUT:-15}
+      - USE_DOCKER_SANDBOX=false     # keep false inside Docker (no nested Docker)
+
+      # ── Persistence ──────────────────────────────────────────────────────────
+      - CHROMA_PERSIST_DIR=/app/chroma_db
+
+    volumes:
+      # Persist ChromaDB memory across container restarts
+      - chroma_data:/app/chroma_db
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:8000/health"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 20s
+
+# ── Named volumes ─────────────────────────────────────────────────────────────
+volumes:
+  ollama_data:
+    driver: local
+  chroma_data:
+    driver: local

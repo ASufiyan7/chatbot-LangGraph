@@ -1,0 +1,46 @@
+# ── NEXUS .dockerignore ───────────────────────────────────────────────────────
+# Exclude files that should not go into the Docker image
+
+# Python
+__pycache__/
+*.py[cod]
+*.pyo
+*.pyd
+.Python
+*.egg-info/
+dist/
+build/
+*.egg
+
+# Virtual environments
+venv/
+.venv/
+env/
+ENV/
+
+# Secrets (never bake into image — use environment variables instead)
+.env
+*.env
+.env.*
+
+# Local data (mounted as volumes in production)
+chroma_db/
+*.db
+
+# Development tools
+.git/
+.gitignore
+*.md
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+
+# IDE
+.vscode/
+.idea/
+*.swp
+*.swo
+
+# OS
+.DS_Store
+Thumbs.db

@@ -1,56 +1,58 @@
-"""
-responder.py  –  NEXUS Final Responder
-"""
+
 from __future__ import annotations
-from langchain_core.messages import SystemMessage, HumanMessage
-from config.llm_factory import get_llm
+
+from langchain_core.messages import HumanMessage, SystemMessage
+
+from config.llm_factory import get_llm, invoke_with_limit
 from graph.state import NexusState
 
-SYSTEM_PROMPT = """You are NEXUS — an expert AI software engineer.
+SYSTEM_PROMPT = """\
+You are NEXUS — an expert AI software engineer delivering a final answer.
 
-Synthesise everything below into a clean, helpful final response for the user.
+Synthesise the context below into a clean, helpful response.
 
-Structure your response as:
-1. Brief explanation of what was built / found / fixed
-2. The final code (in a properly fenced code block)
-3. Example usage or output (if relevant)
-4. Any important caveats or next steps
+Structure:
+1. Brief explanation of what was built / found / fixed (2-4 sentences)
+2. The final code in a properly fenced code block (if any)
+3. Example usage or expected output (if relevant)
+4. Important caveats or next steps (if any)
 
-Be concise, professional, and genuinely helpful. Do NOT repeat the agent discussion logs.
+Rules:
+  - Be concise and professional.
+  - Do NOT repeat agent logs or intermediate scores.
+  - Do NOT say "As an AI" or similar filler.
+  - If no code was generated, give a direct thorough prose answer.
 """
 
 def responder_node(state: NexusState) -> dict:
-    llm = get_llm(temperature=0.3)
-
+    llm      = get_llm(provider="groq", temperature=0.3)
     task     = state["messages"][0].content
     code     = state.get("generated_code", "")
     exec_res = state.get("execution_result", "")
-    review   = state.get("review_notes", "")
-    score    = state.get("critic_score")
     language = state.get("language", "python")
     plan     = state.get("plan", "")
+    score    = state.get("quality_score")
 
     score_str = ""
     if score:
+        badge     = "✅" if score["overall"] >= 0.70 else "⚠️"
         score_str = (
-            f"Quality score: {score['overall']:.0%} "
-            f"(correctness={score['correctness']:.0%}, "
-            f"security={score['security']:.0%}, "
-            f"style={score['style']:.0%})"
+            f"Quality: {badge} {score['overall']:.0%} overall. "
+            f"Note: {score.get('feedback', '')}"
         )
 
     context = "\n\n".join(filter(None, [
-        f"USER TASK: {task}",
-        f"PLAN FOLLOWED:\n{plan}" if plan else "",
-        f"FINAL CODE ({language}):\n```{language}\n{code}\n```" if code else "",
-        f"EXECUTION OUTPUT:\n{exec_res}" if exec_res else "",
-        f"REVIEW SUMMARY:\n{review}" if review else "",
+        f"USER TASK:\n{task}",
+        f"PLAN:\n{plan}"                                          if plan     else "",
+        f"FINAL CODE ({language}):\n```{language}\n{code}\n```"  if code     else "",
+        f"EXECUTION OUTPUT:\n{exec_res}"                          if exec_res else "",
         score_str,
     ]))
 
-    response = llm.invoke([
-        SystemMessage(content=SYSTEM_PROMPT),
-        HumanMessage(content=context),
-    ])
+    response = invoke_with_limit(
+        llm,
+        [SystemMessage(content=SYSTEM_PROMPT), HumanMessage(content=context)],
+        provider="groq",
+    )
 
     return {"messages": [response]}

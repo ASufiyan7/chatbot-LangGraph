@@ -1,30 +1,38 @@
+
 FROM python:3.11-slim
 
-# Prevent Python from writing pyc files
-ENV PYTHONDONTWRITEBYTECODE=1
-ENV PYTHONUNBUFFERED=1
+# Metadata
+LABEL maintainer="NEXUS"
+LABEL description="4-agent autonomous coding system — Groq + Ollama + ChromaDB"
+LABEL version="2.0.0"
 
-# Set working directory
-WORKDIR /app
 
-# Install system dependencies AND Node.js
-RUN apt-get update && apt-get install -y \
+RUN apt-get update && apt-get install -y --no-install-recommends \
     build-essential \
     curl \
-    && curl -fsSL https://deb.nodesource.com/setup_20.x | bash - \
-    && apt-get install -y nodejs \
+    git \
     && rm -rf /var/lib/apt/lists/*
 
-# Copy requirements first (better caching)
-COPY requirements.txt .
-# Install Python dependencies
-RUN pip install --no-cache-dir -r requirements.txt
+#  Working directory 
+WORKDIR /app
 
-# Copy app files and directories
+#  Python dependencies 
+COPY requirements.txt .
+
+RUN pip install --no-cache-dir --upgrade pip \
+    && pip install --no-cache-dir -r requirements.txt
+
+#  Application code 
 COPY . .
 
-# Expose FastAPI port
+RUN mkdir -p /app/chroma_db /app/memory
+
 EXPOSE 8000
 
-# Start FastAPI
-CMD ["uvicorn", "main:app", "--host", "0.0.0.0", "--port", "8000"]
+#  Health check 
+HEALTHCHECK --interval=30s --timeout=10s --start-period=20s --retries=3 \
+    CMD curl -f http://localhost:8000/health || exit 1
+
+#  Start the server 
+CMD ["uvicorn", "main:app", "--host", "0.0.0.0", "--port", "8000", \
+     "--workers", "1", "--log-level", "info"]
