@@ -164,8 +164,8 @@ The easiest way. Starts NEXUS + Ollama together.
 
 ```bash
 # 1. Clone
-git clone https://github.com/ASufiyan7/nexus-v2
-cd nexus-v2
+git clone https://github.com/ASufiyan7/chatbot-LangGraph
+cd chatbot-LangGraph
 
 # 2. Set up environment
 cp .env.example .env
@@ -184,8 +184,8 @@ curl -X POST http://localhost:8000/chat \
 
 ```bash
 # 1. Clone and install
-git clone https://github.com/ASufiyan7/nexus-v2
-cd nexus-v2
+git clone https://github.com/ASufiyan7/chatbot-LangGraph
+cd chatbot-LangGraph
 python -m venv venv
 source venv/bin/activate        # Windows: venv\Scripts\activate
 pip install -r requirements.txt
@@ -212,92 +212,6 @@ uvicorn main:app --reload --host 0.0.0.0 --port 8000
 
 ---
 
-## API Endpoints
-
-Full interactive docs available at `http://localhost:8000/docs` (Swagger UI).
-
-### `POST /chat`
-
-Run the full agent pipeline on a task.
-
-```bash
-curl -X POST http://localhost:8000/chat \
-  -H "Content-Type: application/json" \
-  -d '{
-    "message": "Write a Python function to detect if a linked list has a cycle",
-    "thread_id": "session-1"
-  }'
-```
-
-**Response:**
-```json
-{
-  "response": "Here is a cycle detection function using Floyd's algorithm...",
-  "generated_code": "def has_cycle(head):\n    slow, fast = head, head\n    ...",
-  "quality_score": { "overall": 0.87, "correctness": 0.90, "security": 0.85, "style": 0.82 },
-  "plan": "1. Use two-pointer approach...",
-  "execution_result": "Test passed: cycle detected correctly"
-}
-```
-
-### `WS /ws/chat/{thread_id}`
-
-WebSocket endpoint for streaming. Watch each agent fire in real time.
-
-```python
-import asyncio, websockets, json
-
-async def stream():
-    async with websockets.connect("ws://localhost:8000/ws/chat/t1") as ws:
-        await ws.send(json.dumps({"message": "Write a quicksort"}))
-        async for msg in ws:
-            event = json.loads(msg)
-            print(f"[{event['type']}] {event.get('node', '')} {event.get('data', '')}")
-
-asyncio.run(stream())
-```
-
-**Event types:** `node_start`, `node_end`, `token`, `done`, `error`
-
-### `GET /graph/schema`
-
-Returns the agent graph structure for frontend visualization.
-
-### `GET /health`
-
-```json
-{
-  "status": "ok",
-  "agents": ["orchestrator", "coder", "quality_gate", "responder"],
-  "providers": { "planning": "groq", "coding": "ollama", "review": "groq" }
-}
-```
-
----
-
-## Docker Deployment
-
-```bash
-# Start (background)
-docker compose up -d
-
-# Watch logs
-docker compose logs -f nexus
-
-# Stop (keeps ChromaDB memory)
-docker compose down
-
-# Stop and wipe memory
-docker compose down -v
-
-# Rebuild after code changes
-docker compose up --build
-```
-
-**What persists across restarts:** ChromaDB memory (named Docker volume), downloaded Ollama model weights.
-
----
-
 ## Configuration
 
 All settings via `.env`. No code changes needed.
@@ -316,22 +230,6 @@ All settings via `.env`. No code changes needed.
 
 ---
 
-## Key Design Decisions
-
-**Why 4 agents instead of 6?**
-The original design had 6 agents. The Debugger was merged into Coder (same model, same job). Reviewer + Critic were merged into Quality Gate (one Groq call instead of two). Result: fewer graph nodes, half the API calls per task, identical output quality.
-
-**Why Ollama for code generation?**
-Code gen is the most token-heavy step (2,000–4,000 tokens per task). Running it locally means Groq's free tier quota is reserved for planning and quality review — the steps that genuinely need fast cloud inference.
-
-**Why a token bucket instead of `sleep()`?**
-A token bucket is self-calibrating: it only waits when capacity is exhausted and allows bursting when it isn't. Separate buckets per provider mean a Groq wait never blocks an Ollama call. The original `time.sleep(2)` was a band-aid; the bucket is a proper solution.
-
-**Why manual JSON parsing on Quality Gate?**
-Groq's structured output via Pydantic schemas had intermittent failures. The Quality Gate now prompts for a plain JSON block and parses manually, with a safe fallback score (0.80) if parsing fails — keeping the pipeline alive instead of crashing.
-
----
-
 ## Tech Stack
 
 | Layer | Technology |
@@ -346,12 +244,6 @@ Groq's structured output via Pydantic schemas had intermittent failures. The Qua
 | Language | Python 3.11+ |
 
 ---
-
-## Author
-
-**Sufiyan Ansari** — AI & Data Science, SCET Surat
-
-[![LinkedIn](https://img.shields.io/badge/LinkedIn-Connect-0A66C2?style=flat&logo=linkedin)](https://www.linkedin.com/in/sufiyan-ansari-98056628a/)
 [![GitHub](https://img.shields.io/badge/GitHub-ASufiyan7-181717?style=flat&logo=github)](https://github.com/ASufiyan7)
 
 ---
