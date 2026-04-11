@@ -70,12 +70,17 @@ def quality_gate_node(state: NexusState, config: RunnableConfig) -> dict:
         }
 
     llm  = get_llm(provider="groq", temperature=0.0)
-    task = state["messages"][0].content
+    
+    # FIX 1: Get the LATEST human message to ensure we grade the correct code 
+    human_messages = [m for m in state["messages"] if isinstance(m, HumanMessage)]
+    current_task = human_messages[-1].content if human_messages else state["messages"][-1].content
+    
     exec_res = state.get("execution_result", "(no execution result)")
     exec_ok  = state.get("execution_ok", False)
 
+    # FIX 2: Use current_task in the context
     context = (
-        f"TASK:\n{task}\n\n"
+        f"TASK:\n{current_task}\n\n"
         f"LANGUAGE: {state.get('language', 'python')}\n\n"
         f"CODE:\n```\n{code}\n```\n\n"
         f"EXECUTION (ok={exec_ok}):\n{exec_res}"
@@ -111,7 +116,7 @@ def quality_gate_node(state: NexusState, config: RunnableConfig) -> dict:
     if score["overall"] >= QUALITY_PASS_THRESHOLD:
         save_memory(
             session_id=session_id,
-            task=task,
+            task=current_task,
             code=code,
             outcome=exec_res,
             score=score["overall"],

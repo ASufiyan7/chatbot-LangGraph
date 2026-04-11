@@ -48,24 +48,24 @@ Instructions:
 
 
 def coder_node(state: NexusState) -> dict:
-    llm      = get_llm(provider="ollama", model_name=OLLAMA_MODEL, temperature=0.2)
+    llm = get_llm(provider="ollama", model_name=OLLAMA_MODEL, temperature=0.1)
     language = state.get("language", "python")
-    task     = state["messages"][0].content
+    
+    # FIX 1: Always get the LATEST human message to avoid "ghosts" 
+    human_messages = [m for m in state["messages"] if isinstance(m, HumanMessage)]
+    current_task = human_messages[-1].content if human_messages else state["messages"][-1].content
 
-    #  Step 1: Generate code ─
+    # Step 1: Generate code ─
     memory_block = ""
     if state.get("memory_context"):
         memory_block = f"Relevant past episodes:\n{state['memory_context']}\n\n"
 
-    # If this is a revision loop, the quality gate may have sent feedback
     feedback_block = ""
     if state.get("quality_score") and state.get("revision_count", 0) > 0:
         fb = state["quality_score"].get("feedback", "")
         rev = state.get("quality_score", {}).get("review", "")
         if fb or rev:
-            feedback_block = (
-                f"Quality gate feedback from previous attempt:\n{rev}\n{fb}\n\n"
-            )
+            feedback_block = f"Quality gate feedback from previous attempt:\n{rev}\n{fb}\n\n"
 
     write_prompt = WRITE_PROMPT.format(
         plan=state.get("plan", ""),
@@ -74,18 +74,20 @@ def coder_node(state: NexusState) -> dict:
         feedback_block=feedback_block,
     )
 
+    # FIX 2: Do NOT pass *state["messages"] (the whole history).
+    # Passing only the system prompt + current task keeps Ollama fast and stable[cite: 56, 172].
     response = invoke_with_limit(
         llm,
         [
             SystemMessage(content=write_prompt),
-            *state["messages"],
+            HumanMessage(content=f"Current Task: {current_task}"),
         ],
         provider="ollama",
     )
 
     code = _extract_code(response.content)
 
-    #  Step 2: Execute + self-fix loop 
+    # Step 2: Execute + self-fix loop 
     exec_retries = state.get("exec_retries", 0)
     exec_result  = ""
     exec_ok      = False
@@ -97,11 +99,12 @@ def coder_node(state: NexusState) -> dict:
         if exec_ok or attempt >= MAX_EXEC_RETRIES:
             break
 
+        # FIX 3: Fix loop also uses the current_task only
         fix_response = invoke_with_limit(
             llm,
             [
                 SystemMessage(content=FIX_PROMPT.format(
-                    task=task,
+                    task=current_task,
                     language=language,
                     code=code,
                     error=exec_result,
@@ -119,7 +122,6 @@ def coder_node(state: NexusState) -> dict:
         "execution_ok":     exec_ok,
         "exec_retries":     exec_retries,
     }
-
 
 #  helpers 
 

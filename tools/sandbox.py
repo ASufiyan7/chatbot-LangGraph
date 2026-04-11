@@ -21,6 +21,8 @@ def _strip_markdown_fences(code: str) -> str:
     return "\n".join(lines)
 
 
+# tools/sandbox.py
+
 def _run_subprocess(code: str, language: str) -> dict:
     clean_code = _strip_markdown_fences(code)
     suffix     = ".py" if language == "python" else ".js"
@@ -31,10 +33,12 @@ def _run_subprocess(code: str, language: str) -> dict:
 
     try:
         interpreter = sys.executable if language == "python" else "node"
+        # FIX: Added stdin=subprocess.DEVNULL to prevent interactive hangs
         result = subprocess.run(
             [interpreter, tmp_path],
             capture_output=True,
             text=True,
+            stdin=subprocess.DEVNULL,  # <--- CRITICAL FIX
             timeout=SANDBOX_TIMEOUT,
         )
         return {
@@ -42,7 +46,7 @@ def _run_subprocess(code: str, language: str) -> dict:
             "stderr":    result.stderr.strip(),
             "exit_code": result.returncode,
         }
-
+    # ... rest of the code remains the same ...
     except subprocess.TimeoutExpired:
         return {"stdout": "", "stderr": f"⏱ Timed out after {SANDBOX_TIMEOUT}s", "exit_code": -1}
     except FileNotFoundError:

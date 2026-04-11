@@ -38,17 +38,14 @@ def orchestrator_node(state: NexusState) -> dict:
     provider = "groq" if GROQ_API_KEY else "gemini"
     llm = get_llm(provider=provider, temperature=0.1)
 
+    # Gets the LATEST message sent by the user
     user_message = state["messages"][-1].content
 
     # Pull relevant past episodes from memory 
     memory_ctx = recall_memory(user_message)
     memory_block = ""
     if memory_ctx:
-        memory_block = (
-            "\n\n[RELEVANT PAST EPISODES]\n"
-            + memory_ctx
-            + "\n[END MEMORY]\n"
-        )
+        memory_block = f"\n\n[RELEVANT PAST EPISODES]\n{memory_ctx}\n[END MEMORY]\n"
 
     response = invoke_with_limit(
         llm,
@@ -69,13 +66,19 @@ def orchestrator_node(state: NexusState) -> dict:
     if task_type not in valid_types:
         task_type = "code_gen"
 
+    # CRITICAL FIX: We must return empty values for code/result/score 
+    # to "clear" the state from the previous turn.
     return {
-        "task_type":      task_type,
-        "language":       language,
-        "plan":           plan,
-        "memory_context": memory_ctx,
-        "revision_count": 0,
-        "exec_retries":   0,
+        "task_type":        task_type,
+        "language":        language,
+        "plan":            plan,
+        "memory_context":   memory_ctx,
+        "generated_code":   "",    # Reset old code
+        "execution_result": "",    # Reset old results
+        "execution_ok":     False, # Reset old status
+        "quality_score":    None,  # Reset old score
+        "revision_count":   0,
+        "exec_retries":     0,
     }
 
 
