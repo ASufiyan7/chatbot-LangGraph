@@ -8,3 +8,4 @@ langchain-ollama
 langgraph
 pydantic
 chromadb
+streamlit
