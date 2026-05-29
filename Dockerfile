@@ -27,4 +27,5 @@ RUN mkdir -p /app/chroma_db /app/memory
 EXPOSE 10000
 
 # Start the Streamlit app using the dynamic environment variable string
-CMD ["sh", "-c", "streamlit run app.py --server.port=${PORT:-10000} --server.address=0.0.0.0 --server.enableXsrfProtection=false --server.enableCORS=false"]
+# Start FastAPI backend, wait for port 8000 to be active, then launch Streamlit
+CMD ["sh", "-c", "uvicorn main:app --host 0.0.0.0 --port 8000 --workers 1 & while ! curl -s http://localhost:8000/health > /dev/null; do echo 'Waiting for NEXUS backend to boot...'; sleep 2; done; streamlit run app.py --server.port=${PORT:-10000} --server.address=0.0.0.0 --server.enableXsrfProtection=false --server.enableCORS=false"]
