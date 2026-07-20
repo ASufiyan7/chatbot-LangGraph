@@ -1,4 +1,13 @@
+"""
+config/llm_factory.py — LLM factory (Gemini-free edition).
 
+Provider assignment:
+  groq   → Orchestrator, Quality Gate, Responder  (14,400 req/day free)
+  ollama → Coder                                   (local, unlimited)
+
+Gemini kept as optional fallback — only used if GEMINI_API_KEY is set
+and you explicitly pass provider="gemini". Otherwise ignored entirely.
+"""
 from __future__ import annotations
 
 import logging
@@ -15,7 +24,8 @@ from config.settings import GEMINI_API_KEY, GEMINI_MODEL, GROQ_API_KEY, OLLAMA_B
 log = logging.getLogger("nexus.llm_factory")
 
 
-#  Token-bucket rate limiter ─
+# ── Token-bucket rate limiter ─────────────────────────────────────────────────
+
 class _TokenBucket:
     def __init__(self, capacity: float, rate: float) -> None:
         self._capacity = capacity
@@ -42,12 +52,15 @@ class _TokenBucket:
             time.sleep(min(2.0, 1.0 / self._rate + random.uniform(0, 0.5)))
 
 
+# Groq free tier: 30 req/min → 0.45 req/s; burst of 5
 _BUCKETS: dict[str, _TokenBucket] = {
-    "groq":   _TokenBucket(capacity=5,  rate=0.45),
+    "groq":   _TokenBucket(capacity=8,  rate=0.45),
     "gemini": _TokenBucket(capacity=3,  rate=0.20),
     "ollama": _TokenBucket(capacity=99, rate=99.0),
 }
 
+
+# ── Retry / backoff ───────────────────────────────────────────────────────────
 
 def _with_backoff(fn, provider: str, max_retries: int = 4):
     bucket = _BUCKETS.get(provider)
@@ -70,7 +83,7 @@ def _with_backoff(fn, provider: str, max_retries: int = 4):
             time.sleep(delay)
 
 
-#  LLM constructors 
+# ── LLM constructors ──────────────────────────────────────────────────────────
 
 def _make_groq(temperature: float) -> ChatGroq:
     return ChatGroq(
@@ -99,14 +112,15 @@ def _make_gemini(model_name: str | None, temperature: float):
     )
 
 
-#  Public API 
+# ── Public API ────────────────────────────────────────────────────────────────
+
 def get_llm(provider: str = "groq", model_name: str | None = None, temperature: float = 0.1):
     p = provider.lower()
     if p == "ollama":
         return _make_ollama(model_name, temperature)
     if p == "gemini" and GEMINI_API_KEY:
         return _make_gemini(model_name, temperature)
-    return _make_groq(temperature)  
+    return _make_groq(temperature)   # default & fallback
 
 def invoke_with_limit(llm: Any, messages: list, provider: str = "groq") -> Any:
     return _with_backoff(lambda: llm.invoke(messages), provider=provider)

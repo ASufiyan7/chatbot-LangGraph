@@ -5,13 +5,16 @@ sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 
 import asyncio
 import json
+import logging
 
-from fastapi import FastAPI, HTTPException, WebSocket, WebSocketDisconnect
+from fastapi import FastAPI, WebSocket, WebSocketDisconnect
 from fastapi.middleware.cors import CORSMiddleware
 from langchain_core.messages import HumanMessage
 from pydantic import BaseModel
 
 from graph.nexus_graph import nexus_graph
+
+log = logging.getLogger("nexus.api")
 
 
 app = FastAPI(
@@ -60,14 +63,23 @@ async def chat(req: ChatRequest):
             config,
         )
     except Exception as exc:
-        raise HTTPException(
-            status_code=503,
-            detail=(
-                "Agent pipeline failed. This is often a quota or rate-limit issue "
-                "on Groq / Gemini free tiers. The system will retry automatically "
-                "next request. "
-                f"Original error: {exc}"
+        log.exception("Agent pipeline failed")
+        return ChatResponse(
+            thread_id=req.thread_id,
+            response=(
+                "I could not complete that request because the model backend failed. "
+                "If this mentions Ollama memory, restart Ollama and the FastAPI server; "
+                "the app is now configured to use a smaller context and a local fallback model."
             ),
+            task_type="direct",
+            language="unknown",
+            plan="",
+            generated_code="",
+            execution_result=str(exc),
+            execution_ok=False,
+            quality_score=None,
+            revision_count=0,
+            exec_retries=0,
         )
 
     return ChatResponse(

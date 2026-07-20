@@ -1,5 +1,5 @@
 """
-app.py  –  NEXUS Streamlit Chatbot (Refactored)
+app.py – NEXUS Streamlit Chatbot
 A clean, native Streamlit chat UI for the NEXUS FastAPI backend.
 """
 
@@ -9,9 +9,9 @@ import uuid
 from datetime import datetime
 
 # ── Config ────────────────────────────────────────────────────────────────────
-NEXUS_URL = "http://localhost:8000"
-# Increased timeout to 300 seconds to give the local Ollama model time to self-correct
-TIMEOUT   = 300  
+# Replace this fallback URL with your actual live Render FastAPI URL
+DEFAULT_BACKEND_URL = "https://your-nexus-backend.onrender.com"
+TIMEOUT = 300  
 
 # ── Page setup ────────────────────────────────────────────────────────────────
 st.set_page_config(
@@ -26,11 +26,18 @@ if "chat_history" not in st.session_state:
     st.session_state.chat_history = []
 if "server_status" not in st.session_state:
     st.session_state.server_status = None
+if "nexus_url" not in st.session_state:
+    st.session_state.nexus_url = DEFAULT_BACKEND_URL
 
 # ── Helpers ───────────────────────────────────────────────────────────────────
+def get_clean_url() -> str:
+    """Return backend URL stripped of trailing slashes."""
+    return st.session_state.nexus_url.rstrip("/")
+
 def check_server():
     try:
-        r = requests.get(f"{NEXUS_URL}/health", timeout=3)
+        url = f"{get_clean_url()}/health"
+        r = requests.get(url, timeout=5)
         return r.json() if r.status_code == 200 else None
     except Exception:
         return None
@@ -38,9 +45,10 @@ def check_server():
 def send_to_nexus(message: str) -> dict | None:
     """Send a message to NEXUS with a unique thread_id."""
     thread_id = f"ui_{uuid.uuid4().hex[:12]}"
+    url = f"{get_clean_url()}/chat"
     try:
         r = requests.post(
-            f"{NEXUS_URL}/chat",
+            url,
             json={"message": message, "thread_id": thread_id},
             timeout=TIMEOUT,
         )
@@ -49,9 +57,9 @@ def send_to_nexus(message: str) -> dict | None:
         else:
             return {"error": f"HTTP {r.status_code}: {r.text[:300]}"}
     except requests.exceptions.Timeout:
-        return {"error": "Request timed out. The local Ollama model is taking a while to generate and test code."}
+        return {"error": "Request timed out. The backend model is taking a while to generate and test code."}
     except requests.exceptions.ConnectionError:
-        return {"error": "Cannot connect to NEXUS backend. Is it running on localhost:8000?"}
+        return {"error": f"Cannot connect to NEXUS backend at {get_clean_url()}. Verify the backend service is awake."}
     except Exception as e:
         return {"error": str(e)}
 
@@ -61,20 +69,24 @@ with st.sidebar:
     st.markdown("**Autonomous Multi-Agent AI**")
     st.markdown("---")
 
+    # Editable URL stored in session state
+    st.session_state.nexus_url = st.text_input(
+        "Backend API URL", 
+        value=st.session_state.nexus_url,
+        help="Use your live Render backend URL (e.g., https://nexus-api.onrender.com)"
+    )
+
     # Server status check
     if st.button("🔌 Check server", use_container_width=True):
         st.session_state.server_status = check_server()
 
     status = st.session_state.server_status
     if status is None:
-        st.caption("Click to check server")
+        st.caption("Click above to verify server health")
     elif status:
         st.success(f"Online — v{status.get('version','?')}")
     else:
-        st.error("Server not reachable")
-
-    st.markdown("---")
-    NEXUS_URL = st.text_input("Backend URL", value=NEXUS_URL)
+        st.error("Server unreachable")
 
     st.markdown("---")
     if st.button("🗑️ Clear chat", use_container_width=True):
@@ -82,7 +94,7 @@ with st.sidebar:
         st.rerun()
 
     st.markdown("---")
-    st.caption("NEXUS v2 · LangGraph + FastAPI\n\nGroq · Ollama · Gemini")
+    st.caption("NEXUS v2 · LangGraph + FastAPI\n\nGroq · Gemini")
 
 # ── Main area ─────────────────────────────────────────────────────────────────
 st.title("NEXUS")
@@ -105,13 +117,12 @@ for entry in st.session_state.chat_history:
         elif entry.get("response"):
             resp = entry["response"]
             
-            # 1. Show the clean, final synthesis from the Responder agent
+            # 1. Show final synthesis
             if resp.get("response"):
                 st.markdown(resp["response"])
             
-            # 2. Tuck the verbose agent pipelines into an expander to keep UI clean
+            # 2. Agent execution details
             with st.expander("🛠️ View Agent & Execution Details"):
-                
                 if resp.get("plan"):
                     st.markdown("**📋 Orchestrator Plan**")
                     st.info(resp["plan"])
@@ -137,12 +148,9 @@ for entry in st.session_state.chat_history:
                     else:
                         st.warning(f"**⚖️ Quality Gate Failed:** {overall:.0%} overall score (Required revision)")
 
-
 # ── Input Area ────────────────────────────────────────────────────────────────
-# Using native chat_input fixes the empty label warning and automatically clears upon sending
 if prompt := st.chat_input("Ask anything — write code, debug, review..."):
     
-    # 1. Immediately append and show user message
     st.session_state.chat_history.append({
         "question": prompt,
         "timestamp": datetime.now().strftime("%H:%M:%S"),
@@ -153,15 +161,13 @@ if prompt := st.chat_input("Ask anything — write code, debug, review..."):
     with st.chat_message("user", avatar="👤"):
         st.write(prompt)
 
-    # 2. Show thinking spinner while backend does the heavy lifting
     with st.chat_message("assistant", avatar="🤖"):
         with st.spinner("NEXUS is thinking... (Orchestrator → Coder → Quality Gate → Responder)"):
             result = send_to_nexus(prompt)
             
-            # Update the latest history entry with the result
             if result and "error" in result:
                 st.session_state.chat_history[-1]["error"] = result["error"]
                 st.error(result["error"])
             else:
                 st.session_state.chat_history[-1]["response"] = result
-                st.rerun() # Refresh the UI to render the formatted assistant response
+                st.rerun()
